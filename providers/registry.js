@@ -9,6 +9,10 @@ const DEEPSEEK_HARNESS_HOME = process.env.DEEPSEEK_HARNESS_HOME
   || path.join(DEEPSEEK_HARNESS_ROOT, ".dsh-home");
 const DEEPSEEK_HARNESS_SESSION_ROOT = process.env.DEEPSEEK_HARNESS_SESSION_ROOT
   || path.join(DEEPSEEK_HARNESS_HOME, "sessions");
+const GROK_HOME = process.env.GROK_HOME || path.join(os.homedir(), ".grok");
+const GROK_SESSION_ROOT = process.env.GROK_SESSION_ROOT || path.join(GROK_HOME, "sessions");
+const GROK_CLI_PATH = process.env.GROK_CLI_PATH
+  || path.join(GROK_HOME, "bin", process.platform === "win32" ? "grok.exe" : "grok");
 
 function usageDirectory(id, envName) {
   return process.env[envName] || path.join(USAGE_ROOT, id, "daily");
@@ -192,6 +196,27 @@ const PROVIDERS = Object.freeze([
     quota: null,
     sourceDescription: "DeepSeek Harness local Zstandard session usage events",
   }),
+  provider({
+    id: "grok",
+    label: "Grok",
+    shortLabel: "Grok",
+    tone: "grok",
+    color: "#5a6573",
+    planLabel: null,
+    subtitle: "Grok CLI 本机会话计量",
+    trendTitle: "Grok 最近使用量",
+    breakdownTitle: "Grok Token 构成",
+    forecast: false,
+    detectPaths: [GROK_CLI_PATH, GROK_SESSION_ROOT],
+    usage: {
+      adapter: "grok-local-jsonl",
+      filePrefix: "grok-usage",
+      logRoot: usageDirectory("grok", "GROK_USAGE_LOG_DIR"),
+      sessionRoot: GROK_SESSION_ROOT,
+    },
+    quota: null,
+    sourceDescription: "Grok CLI local primary-session token records",
+  }),
 ]);
 
 const AGGREGATE_PROVIDER = provider({
@@ -209,12 +234,16 @@ const AGGREGATE_PROVIDER = provider({
     filePrefix: "all-usage",
     ccusageArgs: ["daily"],
     logRoot: usageDirectory("all", "ALL_USAGE_LOG_DIR"),
+    autoExport: false,
   },
   quota: null,
   sourceDescription: "ccusage daily aggregate",
 });
 
 const ALL_SOURCES = Object.freeze([...PROVIDERS, AGGREGATE_PROVIDER]);
+const AUTO_EXPORT_SOURCES = Object.freeze(
+  ALL_SOURCES.filter((entry) => entry.usage.adapter === "ccusage" && entry.usage.autoExport !== false)
+);
 
 function getProvider(id, { includeAggregate = true } = {}) {
   const candidates = includeAggregate ? ALL_SOURCES : PROVIDERS;
@@ -243,6 +272,7 @@ module.exports = {
   PROVIDERS,
   AGGREGATE_PROVIDER,
   ALL_SOURCES,
+  AUTO_EXPORT_SOURCES,
   getProvider,
   publicProvider,
 };
