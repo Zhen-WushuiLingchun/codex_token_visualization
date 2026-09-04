@@ -1128,6 +1128,12 @@ function formatRemaining(credit) {
   return `${Math.max(1, hours)} 小时内`;
 }
 
+function compactResetExpiry(value) {
+  return String(value || "--")
+    .replace(/:\d{2}\s+GMT[+-]\d{2}:\d{2}$/i, "")
+    .trim();
+}
+
 function renderResetCredits(data = latestResetCredits) {
   if (!els.resetSummary || !els.resetCreditList) return;
 
@@ -1148,8 +1154,10 @@ function renderResetCredits(data = latestResetCredits) {
     .filter((item) => item.expiresAtMs && item.expiresAtMs > Date.now())
     .sort((a, b) => a.expiresAtMs - b.expiresAtMs)[0];
 
-  if (nextExpiry) {
-    els.resetSummary.textContent = `可用 ${data.available_count} 次；最近到期 ${nextExpiry.credit.expires_at}，剩余 ${formatRemaining(nextExpiry.credit)}`;
+  if (data.summary) {
+    els.resetSummary.textContent = data.summary;
+  } else if (nextExpiry) {
+    els.resetSummary.textContent = `可用 ${data.available_count} 次；${compactResetExpiry(nextExpiry.credit.expires_at)} 到期，剩余 ${formatRemaining(nextExpiry.credit)}`;
   } else {
     els.resetSummary.textContent = `可用 ${data.available_count} 次；未发现未来到期时间。`;
   }
@@ -1162,10 +1170,13 @@ function renderResetCredits(data = latestResetCredits) {
   credits.forEach((credit) => {
     const row = document.createElement("div");
     row.className = "reset-row";
+    const meta = [credit.status || "--", credit.granted_at ? `granted ${credit.granted_at}` : null]
+      .filter(Boolean)
+      .join(" · ");
     row.innerHTML = `
       <div class="reset-main">
         <div class="reset-title">${escapeHtml(credit.title || "Rate-limit reset")}</div>
-        <div class="reset-meta">${escapeHtml(credit.status || "--")} · granted ${escapeHtml(credit.granted_at || "--")}</div>
+        <div class="reset-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="reset-expiry">
         <strong>${escapeHtml(credit.expires_at || "--")}</strong>
@@ -1687,7 +1698,8 @@ function setViewVisibility(view) {
   const isSources = view === "sources";
   const isForecast = view === "forecast";
   const isUsageView = !isSources && !isForecast;
-  const showReset = (view === "overview" && visibleProviderIds.has("codex")) || Boolean(providerMeta[view]?.resetCredits);
+  const showReset = (view === "overview" && visibleProviders().some((provider) => provider.resetCredits))
+    || Boolean(providerMeta[view]?.resetCredits);
   els.forecastView.classList.toggle("is-hidden", !isForecast);
   els.metricGrid.classList.toggle("is-hidden", isForecast);
   els.sourceCompare.classList.toggle("is-hidden", !(view === "overview" || isSources));
@@ -1787,12 +1799,35 @@ async function loadView(view = currentView) {
 
 async function loadResetCredits() {
   if (!els.resetSummary) return;
+  const sources = currentView === "overview"
+    ? visibleProviders().filter((provider) => provider.resetCredits).map((provider) => provider.id)
+    : providerMeta[currentView]?.resetCredits ? [currentView] : [];
+  if (!sources.length) return;
   els.resetSummary.textContent = "正在读取可用重置额度...";
 
   try {
-    const response = await fetch("/api/reset-credits", { cache: "no-store" });
-    const data = await response.json();
-    renderResetCredits(data);
+    const payloads = await Promise.all(sources.map(async (source) => {
+      const response = await fetch(`/api/reset-credits?source=${encodeURIComponent(source)}`, { cache: "no-store" });
+      const data = await response.json();
+      return { ...data, source, source_label: data.source_label || providerMeta[source]?.label || source };
+    }));
+    if (payloads.length === 1) {
+      renderResetCredits(payloads[0]);
+      return;
+    }
+    const successful = payloads.filter((payload) => payload.ok);
+    renderResetCredits({
+      ok: successful.length > 0,
+      message: payloads.map((payload) => `${payload.source_label}：${payload.message || "读取失败"}`).join("；"),
+      summary: payloads.map((payload) => payload.ok
+        ? `${payload.source_label} 可用 ${Number(payload.available_count) || 0} 次`
+        : `${payload.source_label} 暂不可用`).join("；"),
+      available_count: successful.reduce((sum, payload) => sum + (Number(payload.available_count) || 0), 0),
+      credits: successful.flatMap((payload) => (payload.credits || []).map((credit) => ({
+        ...credit,
+        title: `${payload.source_label} · ${credit.title || "Rate-limit reset"}`,
+      }))),
+    });
   } catch (error) {
     renderResetCredits({
       ok: false,
@@ -1844,7 +1879,7 @@ els.viewTabs.addEventListener("click", (event) => {
   if (!tab) return;
   const view = tab.dataset.view || "overview";
   history.replaceState(null, "", `#${view}`);
-  loadView(view);
+  loadView(view).then(loadResetCredits);
 });
 
 els.forecastAgentTabs.addEventListener("click", (event) => {

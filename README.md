@@ -1,6 +1,6 @@
 # AI Token Ledger
 
-> 一个 Windows-first 的本地 AI coding agent 用量账本：统一查看 Codex、Claude Code、Cursor、Kimi、OpenCode 与 DeepSeek Harness 的 token 消耗、账户额度、重置时间和耗尽预测。
+> 一个 Windows-first 的本地 AI coding agent 用量账本：统一查看 Codex、Claude Code、Cursor、Kimi、OpenCode、DeepSeek Harness 与 Grok Build 的 token 消耗、账户额度、重置时间和耗尽预测。
 
 `AI Token Ledger` 将本机日志和账户额度快照放在同一个本地仪表盘里。它不需要数据库服务，不上传 usage JSON，也不会把每日导出和 `npx` 缓存写进 C 盘用户目录。
 
@@ -38,6 +38,14 @@ DeepSeek Harness 页面只读扫描本地 `session.jsonl.zstd`，按会话、推
 
 ![DeepSeek Harness 本地用量](docs/assets/deepseek-harness-usage.png)
 
+### Grok Build 本地用量
+
+Grok Build 页面读取官方 CLI 会话中的 `turn_completed.usage`，自动拆分非缓存输入、缓存输入、输出和推理 token，并按模型汇总实际费用。恢复或分叉会话产生的重复 turn 会被去重，真实子代理调用仍会保留。额度预测页同步官方共享周池的已用百分比和重置时间，banked reset 只读展示可用次数与到期时间。
+
+![Grok Build 本地用量](docs/assets/grok-build-usage.png)
+
+![Grok Build 额度预测](docs/assets/forecast-grok-build.png)
+
 ### 数据源显示设置
 
 齿轮按钮可以选择导航、总览和预测页中关注的 Provider。隐藏只改变页面展示，后台全量刷新和历史快照仍会继续维护所有已注册来源。
@@ -60,15 +68,15 @@ DeepSeek Harness 页面只读扫描本地 `session.jsonl.zstd`，按会话、推
 
 | 能力 | 说明 |
 | --- | --- |
-| 多来源用量账本 | 分别展示 Codex、Claude Code、Cursor、Kimi Code、OpenCode 与 DeepSeek Harness；总览由后端注册表动态聚合。 |
-| 每日快照 | Codex / Claude Code / all-agent 使用 `ccusage`；Cursor 汇总 usage events；Kimi 汇总 `wire.jsonl`；OpenCode 汇总 SQLite；DeepSeek Harness 汇总 Zstandard 会话计量事件。 |
-| 官方额度窗口 | 同步 Codex、Claude Code、Cursor 与 Kimi 的当前已用比例、剩余额度、账期或重置时间。 |
+| 多来源用量账本 | 分别展示 Codex、Claude Code、Cursor、Kimi Code、OpenCode、DeepSeek Harness 与 Grok Build；总览由后端注册表动态聚合。 |
+| 每日快照 | Codex / Claude Code / all-agent 使用 `ccusage`；Cursor 汇总 usage events；Kimi 汇总 `wire.jsonl`；OpenCode 汇总 SQLite；DeepSeek Harness 汇总 Zstandard 会话计量事件；Grok Build 汇总完成 turn。 |
+| 官方额度窗口 | 同步 Codex、Claude Code、Cursor、Kimi 与 Grok Build 的当前已用比例、剩余额度、账期或重置时间。 |
 | 统一刷新 | 顶部刷新和“全部导出”会刷新全部已注册本地 token 与账户额度源。 |
 | 重点来源 | 可自行选择出现在导航、总览和预测页的 Provider；隐藏不停止后台刷新。 |
 | 耗尽预测 | 结合今日实时速度、3 日、7 日速度，预测当前额度窗口的消耗节奏。 |
 | 模型等效 Token | 样本足够时，从官方额度变化反向学习模型权重；不会拿 API 价格伪装成订阅额度换算。 |
 | 日内重置识别 | 上午用完额度、午间重置、下午继续使用时，重置前后的 Token 会自动分段，避免污染拟合。 |
-| 重置 credits | Codex 页可显示 reset credit 的可用次数与本地时区有效期。 |
+| 重置 credits | Codex 与 Grok Build 页可显示 banked reset 的可用次数与本地时区有效期；不会在仪表盘内消耗。 |
 | 新版本提示 | 页面打开时静默检查 GitHub；只有远端 `main` 严格领先本地提交时才显示可关闭提示。 |
 | 定时导出 | Windows 计划任务默认每天中午 12:00 运行，即使晚间关机也不影响。 |
 
@@ -76,7 +84,7 @@ DeepSeek Harness 页面只读扫描本地 `session.jsonl.zstd`，按会话、推
 
 ### 1. 检查运行环境
 
-当前项目面向 Windows 10/11，建议使用 Node.js 22.15 或更高版本、PowerShell，以及已经登录的 Codex / Claude Code / Cursor。Node 22.15 是读取 DeepSeek Harness Zstandard 会话日志所需的最低版本。Kimi 官方桌面应用和 Kimi Code CLI 的本地 token 都可读取；会员月总额来自已登录的 Kimi 桌面应用，周额度来自已登录的 Kimi Code CLI。OpenCode 与 DeepSeek Harness 是可选来源，只要已经生成对应本地日志即可，无需把它们加入 `PATH`。
+当前项目面向 Windows 10/11，建议使用 Node.js 22.15 或更高版本、PowerShell，以及已经登录的 Codex / Claude Code / Cursor。Node 22.15 是读取 DeepSeek Harness Zstandard 会话日志所需的最低版本。Kimi 官方桌面应用和 Kimi Code CLI 的本地 token 都可读取；会员月总额来自已登录的 Kimi 桌面应用，周额度来自已登录的 Kimi Code CLI。OpenCode、DeepSeek Harness 与 Grok Build 是可选来源，只要已经生成对应本地日志即可。
 
 ```powershell
 node --version
@@ -126,6 +134,20 @@ $env:DEEPSEEK_HARNESS_SESSION_ROOT = "D:\deepseek-harness\.dsh-home\sessions"
 $env:DEEPSEEK_HARNESS_PROVIDER_IDS = "deepseek,deepseek-official,my-deepseek-gateway"
 ```
 
+Grok Build 默认读取官方 CLI 的 `~/.grok/sessions/**/updates.jsonl`。先运行一次 Grok Build 并完成至少一个 turn：
+
+```powershell
+grok --version
+Test-Path "$HOME\.grok\sessions"
+```
+
+自定义 home 或会话目录可在启动和导出前设置。`GROK_BUILD_SESSION_ROOT` 优先于 `GROK_HOME`：
+
+```powershell
+$env:GROK_HOME = "D:\grok-home"
+$env:GROK_BUILD_SESSION_ROOT = "D:\grok-home\sessions"
+```
+
 ### 2. 导出第一份数据
 
 ```powershell
@@ -168,23 +190,27 @@ flowchart LR
   T[Kimi 桌面应用 wire.jsonl] --> Q
   V[OpenCode opencode.db] --> W[assistant message token 聚合]
   Y[DeepSeek Harness session.jsonl.zstd] --> Z[逐步骤 usage 去重]
+  AB[Grok Build updates.jsonl] --> AC[完成 turn 与跨会话去重]
   B --> G[usage-logs/codex/daily]
   D --> H[usage-logs/claude/daily]
   F --> I[usage-logs/cursor/daily]
   Q --> R[usage-logs/kimi/daily]
   W --> X[usage-logs/opencode/daily]
   Z --> AA[usage-logs/deepseek-harness/daily]
+  AC --> AD[usage-logs/grok-build/daily]
   G --> J[AI Token Ledger WebUI]
   H --> J
   I --> J
   R --> J
   X --> J
   AA --> J
+  AD --> J
   K[Codex app-server] --> L[账户额度快照]
   M[Claude OAuth usage] --> L
   N[Cursor usage summary] --> L
   S[Kimi Code managed usage] --> L
   U[Kimi 桌面会员月额度] --> L
+  AE[Grok Build CLI billing] --> L
   L --> J
   J --> O[额度预测与重置分段]
 ```
@@ -192,7 +218,7 @@ flowchart LR
 点击顶部刷新或“全部导出”时，系统固定按以下顺序执行：
 
 1. 从后端注册表读取所有 `ccusage` 来源并导出当日 JSON。
-2. 同步 Codex、Claude Code、Cursor、Kimi Code 的账户额度与本地事件来源，并导出 OpenCode 与 DeepSeek Harness 本地用量。
+2. 同步 Codex、Claude Code、Cursor、Kimi Code 的账户额度与本地事件来源，并导出 OpenCode、DeepSeek Harness 与 Grok Build 本地用量。
 3. 记录去重后的分段观测点。
 4. 重新读取当前页面；不管停留在哪个标签页，看到的都是同一轮数据。
 
@@ -208,6 +234,7 @@ flowchart LR
 | `Kimi` | Kimi `usage.record` 的本地 token 明细、会员月额度构成和周额度。 |
 | `OpenCode` | OpenCode assistant 消息的本地 token、费用和 `provider/model` 分布；不生成不存在的统一额度预测。 |
 | `DeepSeek Harness` | Harness 会话中实际路由到 DeepSeek 的逐日 token、缓存、输出、推理与模型分布；不读取正文，也不虚构账户额度。 |
+| `Grok Build` | Grok Build 完成 turn 的逐日 token、缓存、输出、推理、费用与模型分布，以及共享周额度和 banked reset 到期时间。 |
 | `齿轮` | 选择显示在导航、总览和预测中的 Provider；至少保留一个，设置保存在本地。 |
 | `数据源` | 日志目录、检测状态、每日快照和额度观测点数量。 |
 
@@ -225,6 +252,7 @@ flowchart LR
 | Kimi | CLI `~/.kimi-code/sessions/**/wire.jsonl` + 桌面应用嵌入式 Kimi Code `sessions/**/wire.jsonl` | Kimi 会员 subscription stats + Kimi Code managed usage | 会员月总额及 Kimi / Code 构成、周额度与各自重置时间 |
 | OpenCode | `~/.local/share/opencode/opencode.db` 中的 assistant token 字段 | 无统一账户口径 | 不生成额度窗口 |
 | DeepSeek Harness | `.dsh-home/sessions/**/session.jsonl.zstd` 中的 usage 事件 | 未发现可验证的本机统一额度接口 | 不生成额度窗口 |
+| Grok Build | `~/.grok/sessions/**/updates.jsonl` 中的 `turn_completed.usage` | 官方 CLI `_x.ai/billing` + Grok Web 只读 reset RPC | Grok 共享周池、重置时间、预付余额、banked reset |
 
 ### Codex
 
@@ -253,6 +281,18 @@ Kimi token 明细同时扫描 CLI 与官方桌面应用的本地会话，只累�
 解析结果只含日期、Provider、模型和 token 数字。会话 ID、工作目录、请求头正文、用户消息、助手文本和工具内容均在解析时丢弃，不会写入 `usage-logs`。活动文件末尾若存在未完成 frame，会保留此前完整 frame 并跳过残缺尾部；单个损坏文件不会阻止其他会话统计，但所有文件均不可解码时导出会失败并保留旧账本。
 
 DeepSeek Harness 目前作为纯本地用量来源接入。没有经过验证的官方账户额度百分比与重置时间接口，因此页面不会凭 token 数量伪造额度或耗尽预测。
+
+### Grok Build
+
+Grok Build 采集器依据[官方会话持久化说明](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md)，递归扫描 `~/.grok/sessions` 下所有 `updates.jsonl`，只接受 `sessionUpdate: "turn_completed"` 的最终 usage。它不会使用 `signals.json` 中用于上下文恢复的 token 快照，也不会解析用户消息、助手正文或工具内容。[Grok Build 官方仓库](https://github.com/xai-org/grok-build)与[产品说明](https://x.ai/news/grok-build-cli)可用于核对 CLI 与本地会话格式。
+
+xAI 的 `inputTokens` 含缓存输入，因此页面先减去 `cachedReadTokens` 和 `cacheCreationTokens`，再把剩余部分显示为“非缓存输入”；`reasoningTokens` 是输出的子项，只单列而不重复加入总 token。`costUsdTicks` 按固定点美元换算后保留在每日账本中。若同一个 prompt/model 因恢复、导入或分叉出现在多个会话文件中，只保留最新且最完整的一份；不同 prompt 的父会话和子代理调用都会计入。
+
+额度刷新通过官方 CLI 的 `_x.ai/billing` 扩展完成，读取 `creditUsagePercent` 和 `currentPeriod`，不直接处理 CLI access token。[xAI FAQ](https://docs.x.ai/grok/faq)说明这是 Grok 各产品共享的周使用池，页面显示的百分比并非 Build token 的一对一比例；如果同一周期还使用 Grok Chat、Imagine、Voice 或 API，这些消耗也会推动周池百分比，拟合结果会如实反映这种混合行为。
+
+banked reset 通过 Grok Web 自身的 `ConsumerUiSvc/GetRemainingResets` 只读 RPC 获取。仪表盘只保留可用数量和最早到期时间，reset token ID 在内存解析阶段丢弃，也不提供兑换按钮。点击顶部刷新会同时更新周额度、预测观测点和 banked reset；手动在 Grok 官方页面使用 reset 后，下一次刷新会检测已用比例下降或周期变化并开启新分段，旧周期拟合样本不会被删除。
+
+持久化结果只含日期、模型、usage 数字、额度百分比和 reset 到期时间，不含 prompt ID、reset token ID、会话 ID、工作目录、对话正文或凭证。
 
 ## 额度预测：原始 Token、模型等效 Token 与重置
 
@@ -330,7 +370,7 @@ quota: {
 
 `selectable: false` 可把构成项保留在快照中但不生成独立预测标签，例如 Cursor 的 `Auto + Composer` 与 `API`。没有写入模板、但接口返回有效利用率和重置时间的新窗口会使用字段名生成默认标签并自动进入前端；确认口径后再在模板补上中文名和 `modelPatterns` 即可。
 
-如果协议完全不同，只需在 `scripts/sync-account-quotas.mjs` 的后端 adapter map 新增采集函数，再在注册表引用它；无需增加新的用量页前端分支。OpenCode 和 DeepSeek Harness 都是 `forecast: false`、`quota: null` 的纯本地用量模板示例。注册表返回给浏览器的对象由 `publicProvider()` 白名单生成，不含凭证路径、接口地址、命令参数、窗口模板或 adapter 名称。
+如果协议完全不同，只需在 `scripts/sync-account-quotas.mjs` 的后端 adapter map 新增采集函数，再在注册表引用它；无需增加新的用量页前端分支。OpenCode 和 DeepSeek Harness 是 `forecast: false`、`quota: null` 的纯本地用量模板示例；Grok Build 则示范同一 Provider 同时返回本地 usage 与在线 quota。注册表返回给浏览器的对象由 `publicProvider()` 白名单生成，不含凭证路径、接口地址、命令参数、窗口模板或 adapter 名称。
 
 Provider 数量增加后不需要删注册项。页面齿轮中的显示设置会把隐藏选择写入 `usage-logs/display-settings.json`；未显示的 Provider 仍参与全量导出，重新勾选后历史立即可见。以后新注册的 Provider 默认自动显示，再由用户决定是否隐藏。
 
@@ -395,6 +435,9 @@ npm run export:opencode
 # 只同步 DeepSeek Harness 本地 token
 npm run export:deepseek-harness
 
+# 同步 Grok Build 本地 token、周额度和 banked reset
+npm run export:grok-build
+
 # 启动本地 WebUI
 npm start
 ```
@@ -415,6 +458,7 @@ usage-logs/
 ├─ kimi/daily/kimi-usage.json         # Kimi wire 完整每日历史滚动文件
 ├─ opencode/daily/opencode-usage.json # OpenCode SQLite 完整每日历史滚动文件
 ├─ deepseek-harness/daily/deepseek-harness-usage.json # Harness 完整每日历史滚动文件
+├─ grok-build/daily/grok-build-usage.json # Grok Build 完整每日历史滚动文件
 ├─ all/daily/all-usage.json           # all-agent 完整每日历史滚动文件
 ├─ display-settings.json        # 本地 Provider 显示选择
 ├─ forecast-settings.json       # 预测页本地设置
@@ -439,8 +483,8 @@ usage-logs/
 
 ### 不会写入项目或提交的内容
 
-- Codex / Claude / Cursor / Kimi / OpenCode / DeepSeek Harness 的 access token、refresh token、API key、cookie；
-- 邮箱、完整账户 ID、会话内容、原始 Cursor events、OpenCode message 正文或 Harness message/tool 正文；
+- Codex / Claude / Cursor / Kimi / OpenCode / DeepSeek Harness / Grok Build 的 access token、refresh token、API key、cookie；
+- 邮箱、完整账户 ID、会话内容、原始 Cursor events、OpenCode message 正文、Harness message/tool 正文、Grok Build prompt ID 或 reset token ID；
 - `usage-logs/`、`codex-usage-logs/`、`.npm-cache/`、`verification/`、`node_modules/`。
 
 账户凭证只在本机内存中，用于向对应服务读取自己的账户用量；本地 WebUI 不会把它们返回给浏览器。
@@ -449,7 +493,7 @@ usage-logs/
 
 它很适合回答：
 
-> 我这台机器上的 Codex / Claude Code / Cursor / Kimi Code / OpenCode / DeepSeek Harness，最近每天消耗了多少 token？有官方额度的来源还剩多少？按现在速度能用多久？
+> 我这台机器上的 Codex / Claude Code / Cursor / Kimi Code / OpenCode / DeepSeek Harness / Grok Build，最近每天消耗了多少 token？有官方额度的来源还剩多少？按现在速度能用多久？
 
 它不能保证：
 
@@ -519,6 +563,18 @@ npm run export:deepseek-harness
 
 要求 Node.js `>=22.15`。输出文件是 `usage-logs\deepseek-harness\daily\deepseek-harness-usage.json`。如果 Harness 使用自定义 home，请先设置 `DEEPSEEK_HARNESS_HOME` 或 `DEEPSEEK_HARNESS_SESSION_ROOT`；如果使用自定义 DeepSeek 路由名，再设置 `DEEPSEEK_HARNESS_PROVIDER_IDS`。顶部刷新与每日定时任务都会调用同一采集器。
 
+### Grok Build 今天的 token 没出现
+
+先确认 CLI 已经完成至少一个 turn，并单独导出：
+
+```powershell
+grok --version
+Test-Path "$HOME\.grok\sessions"
+npm run export:grok-build
+```
+
+输出文件是 `usage-logs\grok-build\daily\grok-build-usage.json`。采集器只统计已落盘的 `turn_completed`；正在运行且尚未完成的 turn 会在结束后的下一次刷新中出现。额度读取还要求本机 Grok CLI 已登录；若周额度同步提示凭证问题，请先运行 `grok login`。顶部刷新、全部导出与每日定时任务都会同步 token、周额度与 banked reset。
+
 ### 端口 8787 被占用
 
 ```powershell
@@ -583,4 +639,4 @@ node --check web/app.js
 node --check web/forecast-model.js
 ```
 
-测试覆盖模型等效 Token、模型混合不可辨识时的降级、同日多窗口观测、额度重置分段、Provider 元数据脱敏、Claude 动态窗口与模型过滤、Kimi CLI/桌面事件合并去重、OpenCode 多模型聚合、DeepSeek Harness 多 frame 解码与逐步骤去重，以及显示设置的过滤与最少一个来源约束。
+测试覆盖模型等效 Token、模型混合不可辨识时的降级、同日多窗口观测、额度重置分段、Provider 元数据脱敏、Claude 动态窗口与模型过滤、Kimi CLI/桌面事件合并去重、OpenCode 多模型聚合、DeepSeek Harness 多 frame 解码与逐步骤去重、Grok Build 缓存输入拆分与跨会话去重，以及显示设置的过滤与最少一个来源约束。

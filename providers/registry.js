@@ -9,6 +9,9 @@ const DEEPSEEK_HARNESS_HOME = process.env.DEEPSEEK_HARNESS_HOME
   || path.join(DEEPSEEK_HARNESS_ROOT, ".dsh-home");
 const DEEPSEEK_HARNESS_SESSION_ROOT = process.env.DEEPSEEK_HARNESS_SESSION_ROOT
   || path.join(DEEPSEEK_HARNESS_HOME, "sessions");
+const GROK_HOME = process.env.GROK_HOME || path.join(os.homedir(), ".grok");
+const GROK_BUILD_SESSION_ROOT = process.env.GROK_BUILD_SESSION_ROOT
+  || path.join(GROK_HOME, "sessions");
 
 function usageDirectory(id, envName) {
   return process.env[envName] || path.join(USAGE_ROOT, id, "daily");
@@ -191,6 +194,38 @@ const PROVIDERS = Object.freeze([
     },
     quota: null,
     sourceDescription: "DeepSeek Harness local Zstandard session usage events",
+  }),
+  provider({
+    id: "grok-build",
+    label: "Grok Build",
+    shortLabel: "Grok",
+    tone: "grok",
+    color: "#555b65",
+    planLabel: null,
+    subtitle: "Grok Build 本地会话计量",
+    trendTitle: "Grok Build 最近使用量",
+    breakdownTitle: "Grok Build Token 构成",
+    forecast: true,
+    resetCredits: true,
+    detectPaths: [
+      GROK_BUILD_SESSION_ROOT,
+      path.join(GROK_HOME, "bin", process.platform === "win32" ? "grok.exe" : "grok"),
+    ],
+    usage: {
+      adapter: "grok-build-jsonl",
+      filePrefix: "grok-build-usage",
+      logRoot: usageDirectory("grok-build", "GROK_BUILD_USAGE_LOG_DIR"),
+      sessionRoot: GROK_BUILD_SESSION_ROOT,
+    },
+    quota: {
+      adapter: "grok-build-acp",
+      discoverWindows: true,
+      minimumForecastWindowMins: 10080,
+      windows: [
+        { name: "weekly_limit", label: "Grok 共享周额度", windowDurationMins: 10080, windowKind: "weekly" },
+      ],
+    },
+    sourceDescription: "Grok Build local turn usage + official CLI billing",
   }),
 ]);
 
