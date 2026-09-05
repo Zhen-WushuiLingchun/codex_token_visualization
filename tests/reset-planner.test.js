@@ -15,6 +15,40 @@ const input = (changes = {}) => ({
   intervalCount: 8, rSquared: 0.95, ...changes,
 });
 
+test("reset benefits and schedules use quota points, not raw or equivalent token scale", () => {
+  const a = planResets(input({ equivalentDailyTokens: 60_000_000 }));
+  const b = planResets(input({ dailyTokens: 3_000_000, equivalentDailyTokens: 180_000_000 }));
+  assert.equal(a.benefitUnit, "quota-percentage-points");
+  assert.equal(a.plan.gainPercent, b.plan.gainPercent);
+  assert.deepEqual(a.plan.actions, b.plan.actions);
+  assert.deepEqual(a.urgentPlans, b.urgentPlans.map((entry, index) => ({ ...entry,
+    extraTodayTokens: a.urgentPlans[index].extraTodayTokens,
+    versusRegularTodayTokens: a.urgentPlans[index].versusRegularTodayTokens,
+    horizonTradeoffTokens: a.urgentPlans[index].horizonTradeoffTokens,
+  })));
+  assert.equal(a.plan.gainEquivalentTokens, a.plan.gainPercent * 1_000_000);
+  assert.equal(a.plan.gainTokens, a.plan.gainPercent * 500_000);
+  assert.equal(b.plan.gainEquivalentTokens, a.plan.gainEquivalentTokens * 3);
+  assert.ok(Math.abs(b.plan.gainTokens * 10 - a.plan.gainTokens) < 1e-6);
+  assert.equal(planResets(input()).plan.gainEquivalentTokens, null);
+});
+
+test("same token count with faster measured quota consumption schedules the first reset earlier", () => {
+  const a = planResets(input());
+  const b = planResets(input({ percentPerDay: 150, equivalentDailyTokens: 75_000_000 }));
+  assert.ok(b.plan.actions[0].at < a.plan.actions[0].at);
+});
+
+test("model calibration failures suppress numeric planning without discarding reset inventory", () => {
+  for (const reason of ["model-calibrating", "model-mix-changed"]) {
+    const result = planResets(input({ calibration: { ready: false, reason } }));
+    assert.equal(result.status, "sampling");
+    assert.equal(result.reason, reason);
+    assert.equal(result.availableCount, 2);
+    assert.equal(result.plan, undefined);
+  }
+});
+
 test("reset inventory filters redeemed, unknown-scope and expired credits without retaining ids", () => {
   const result = inventory({ available_count: 4, credits: [
     credit(4, { id: "private" }), credit(2), credit(3, { title: "Partial reset" }), credit(-1),

@@ -183,6 +183,9 @@
     const dailyTokens = finite(input.dailyTokens);
     const percentPerDay = finite(input.percentPerDay);
     if (!(dailyTokens > 0)) return { ...base, status: "sampling", reason: "no-recent-usage" };
+    if (input.calibration && input.calibration.ready !== true) {
+      return { ...base, status: "sampling", reason: input.calibration.reason || "model-calibrating" };
+    }
     if (!(percentPerDay > 0) || (finite(input.intervalCount) ?? 0) < 2) {
       return { ...base, status: "sampling", reason: "insufficient-fit" };
     }
@@ -196,22 +199,33 @@
     const end = Math.min(now + MAX_DAYS * DAY, lastExpiry + period);
     const credits = stock.credits.filter((credit) => credit.expiresAt - HOUR < end);
     const tokensPerPercent = dailyTokens / percentPerDay;
+    const equivalentDailyTokens = finite(input.equivalentDailyTokens);
+    const equivalentTokensPerPercent = equivalentDailyTokens > 0 ? equivalentDailyTokens / percentPerDay : null;
+    // Token projections are display-only. The optimizer and policy comparison use quota points.
+    const projectTokens = (result) => ({ ...result,
+      baselineTokens: result.baselinePercent * tokensPerPercent,
+      servedTokens: result.servedPercent * tokensPerPercent,
+      gainTokens: result.gainPercent * tokensPerPercent,
+      gainEquivalentTokens: equivalentTokensPerPercent === null ? null : result.gainPercent * equivalentTokensPerPercent,
+    });
     const modes = policy.cycleMode === "unknown" ? ["restart", "fixed"] : [policy.cycleMode];
     const scenarios = [0.7, 1, 1.3].map((factor) => {
       const alternatives = modes.map((cycleMode) => {
         const result = optimizeSchedule({ now, end, remaining, resetAt, period,
           percentPerDay: percentPerDay * factor, credits, cycleMode });
-        return { ...result, baselineTokens: result.baselinePercent * tokensPerPercent,
-          servedTokens: result.servedPercent * tokensPerPercent, gainTokens: result.gainPercent * tokensPerPercent };
+        return projectTokens(result);
       });
-      const conservative = alternatives.reduce((a, b) => a.gainTokens <= b.gainTokens ? a : b);
-      return { factor, dailyTokens: dailyTokens * factor, ...conservative, alternatives };
+      const conservative = alternatives.reduce((a, b) => a.gainPercent <= b.gainPercent ? a : b);
+      return { factor, percentPerDay: percentPerDay * factor, dailyTokens: dailyTokens * factor, ...conservative, alternatives };
     });
     const urgentPlans = remaining <= percentPerDay ? modes.map((cycleMode) => {
       const urgent = optimizeSchedule({ now, end, remaining, resetAt, period, percentPerDay,
         credits, cycleMode, objective: "urgent-24h" });
       const regular = scenarios[1].alternatives.find((entry) => entry.cycleMode === cycleMode);
       return { ...urgent,
+        extraTodayPercent: Math.max(0, urgent.urgentPercent - urgent.baselineUrgentPercent),
+        versusRegularTodayPercent: Math.max(0, urgent.urgentPercent - regular.urgentPercent),
+        horizonTradeoffPercent: Math.max(0, regular.servedPercent - urgent.servedPercent),
         extraTodayTokens: Math.max(0, urgent.urgentPercent - urgent.baselineUrgentPercent) * tokensPerPercent,
         versusRegularTodayTokens: Math.max(0, urgent.urgentPercent - regular.urgentPercent) * tokensPerPercent,
         horizonTradeoffTokens: Math.max(0, regular.servedPercent - urgent.servedPercent) * tokensPerPercent };
@@ -243,13 +257,14 @@
           if (usesStock(candidate)) { high = middle; plans = candidate; }
           else low = middle;
         }
-        target = { factor: high, dailyTokens: dailyTokens * high,
-          alternatives: plans.map((plan) => ({ ...plan, gainTokens: plan.gainPercent * tokensPerPercent })) };
+        target = { factor: high, percentPerDay: percentPerDay * high, dailyTokens: dailyTokens * high,
+          alternatives: plans.map(projectTokens) };
       }
     }
     return {
       ...base, status: "ready", reason: null, end, resetAt, remainingPercent: remaining,
       percentPerDay, dailyTokens, tokensPerPercent, fitQuality, intervalCount: input.intervalCount,
+      benefitUnit: "quota-percentage-points", equivalentDailyTokens, equivalentTokensPerPercent,
       period, scenarios, plan: scenarios[1], policyUncertain: modes.length > 1,
       target,
       urgentPlans,

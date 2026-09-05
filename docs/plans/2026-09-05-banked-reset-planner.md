@@ -3,8 +3,10 @@
 ## Objective
 
 Maximize estimated work served before the last known reset expiry plus one quota
-cycle, using recent measured token demand. Benefits are additional supported tokens
-relative to waiting for natural resets. They are not cash savings or task quality.
+cycle, using recent measured, model-calibrated quota demand. Benefits are additional
+quota percentage points relative to waiting for natural resets (100 points is one
+full pool). Equivalent and raw Token projections are separate display-only measures,
+not cash savings, task quality or a fixed subscription Token capacity.
 
 ## Inputs and scope
 
@@ -15,6 +17,10 @@ relative to waiting for natural resets. They are not cash savings or task qualit
 - Only schedule known full resets with known expiries and matching available counts.
 - Stale account snapshots (six hours), weak fits or insufficient intervals produce
   conditional advice, never an invented token capacity or exact schedule.
+- Recently material models need individual sample coverage and calibration checks;
+  new models do not inherit the old pooled model weight. Do not use API prices as
+  subscription multipliers or impose an arbitrary fourfold weight cap. See README
+  for coverage thresholds, drift guards and the limits of equivalent Tokens.
 - The plan uses the existing weekly-or-longer view. Short-window throttling and
   other products sharing the account can reduce actual served work.
 
