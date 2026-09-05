@@ -1021,6 +1021,25 @@ main {
   margin-bottom: 14px;
 }
 
+.reset-plan-proof,
+.reset-plan-stress {
+  margin-bottom: 14px;
+}
+
+.reset-plan-urgent {
+  margin-top: 18px;
+  padding: 12px 18px;
+  border-left: 3px solid var(--clay);
+  background: rgba(193, 93, 62, 0.06);
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.reset-plan-urgent > p {
+  margin: 8px 0;
+}
+
 .reset-target-actions {
   max-height: 220px;
   overflow-y: auto;

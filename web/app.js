@@ -449,6 +449,13 @@ function localUsageDays(snapshot) {
   });
 }
 
+function resetStressHistory(days) {
+  const first = days.map(dayKey).filter(Boolean).sort()[0];
+  if (!first) return [];
+  return Array.from({ length: 28 }, (_, index) => addDays(localDateKey(), index - 28))
+    .filter((date) => date >= first).map((date) => usageForDateRange(days, date, date));
+}
+
 function buildForecastRate(days, fallbackDailyTokens) {
   const today = localDateKey();
   const todayUsage = usageForDateRange(days, today, today);
@@ -1838,7 +1845,7 @@ function renderResetPlan(provider, forecast, result, loadError) {
   const plan = result.plan;
   const first = plan.actions[0];
   const unused = Math.max(0, result.credits.length - plan.actions.length - result.deferredCount);
-  const scopeLabel = `${result.policyUncertain ? "条件方案：" : ""}${plan.cycleMode === "restart" ? "使用后重新起算周期" : "保留原自然重置日"}`;
+  const scopeLabel = `全期最多 Token · ${result.policyUncertain ? "条件方案：" : ""}${plan.cycleMode === "restart" ? "使用后重新起算周期" : "保留原自然重置日"}`;
   const nextLabel = first
     ? (first.at <= Date.now() + 30 * 60000 ? "当前可考虑使用" : `${plannerTime(first.at)} 附近`)
     : "本情景暂不需要重置";
@@ -1862,9 +1869,21 @@ function renderResetPlan(provider, forecast, result, loadError) {
       <td>${formatCompact(scenario.dailyTokens)} / 日</td><td>+${benefit}</td>
       <td>${alternatives.map((entry) => `${result.policyUncertain ? (entry.cycleMode === "restart" ? "重新起算：" : "原定周期：") : ""}${entry.actions[0] ? plannerTime(entry.actions[0].at) : "暂不需要"}`).join("<br>")}</td></tr>`;
   }).join("");
+  const certificate = plan.certificate;
+  const proofLabel = certificate.continuousOptimal ? "模型内已达连续时间上界"
+    : `${Math.round(certificate.stepMs / 60000)} 分钟网格最优`;
+  const urgent = result.urgentPlans.filter((entry) => entry.actions.length && entry.extraTodayTokens > 1);
+  const stress = result.stress;
   section.innerHTML = `${header}
     <div class="reset-plan-advice"><span class="section-label">${escapeHtml(scopeLabel)}</span>
       <h4>${escapeHtml(nextLabel)}</h4><p>${escapeHtml(advice)}</p></div>
+    ${urgent.length ? `<div class="reset-plan-urgent"><strong>今天优先续工</strong>
+      ${urgent.map((entry) => `<p>${result.policyUncertain ? `${entry.cycleMode === "restart" ? "重新起算周期" : "保留原周期"}：` : ""}
+        ${entry.actions[0].at <= Date.now() + 30 * 60000 ? "现在可考虑重置" : `${plannerTime(entry.actions[0].at)} 附近重置`}，
+        未来 24 小时比等待自然恢复多支持 ${formatCompact(entry.extraTodayTokens)} Token。</p>
+        <p>${entry.versusRegularTodayTokens > 1 ? `相比全期方案，今天多支持 ${formatCompact(entry.versusRegularTodayTokens)} Token；全期少支持 ${formatCompact(entry.horizonTradeoffTokens)} Token。` : "与全期方案的近期收益一致。"}</p>`).join("")}
+      <p>适用于今天确实要继续工作；先最大化未来 24 小时可支持量，再优化全期。短时限流仍以官方状态为准。</p>
+    </div>` : ""}
     <div class="reset-plan-metrics">
       ${plannerMetric("预计多支持 Token", `+${formatCompact(plan.gainTokens)}`, `规划至 ${plannerTime(result.end)}`)}
       ${plannerMetric("不使用 / 按方案使用", `${formatCompact(plan.baselineTokens)} / ${formatCompact(plan.servedTokens)}`, "相同工作需求、相同时间范围")}
@@ -1875,15 +1894,28 @@ function renderResetPlan(provider, forecast, result, loadError) {
       <table><thead><tr><th>Reset</th><th>建议时间</th><th>届时剩余</th><th>新的自然重置</th></tr></thead><tbody>${schedule}</tbody></table>
     </div>
     <p class="reset-plan-basis">当前剩余 ${result.remainingPercent.toFixed(0)}% · 自然重置 ${plannerTime(result.resetAt)} · ${result.intervalCount} 个有效区间 · 拟合 R² ${result.fitQuality.toFixed(2)} · ${forecast.modelFit?.active ? "已按近期模型组合换算" : "按原始 Token 拟合"}</p>
+    <details class="reset-plan-details reset-plan-proof"><summary>${proofLabel}</summary>
+      <p>全期方案由动态规划计算，枚举允许的重置时刻而不截断候选状态。当前网格 ${Math.round(certificate.stepMs / 60000)} 分钟，另含到期和原定自然恢复边界；${certificate.gridPoints} 个时间点。</p>
+      <p>在当前需求和周期假设下，连续时间的可支持量上界为 ${formatCompact(certificate.continuousUpperPercent * result.tokensPerPercent)} Token，当前安排距上界 ${formatCompact(certificate.continuousGapPercent * result.tokensPerPercent)} Token。差为零时证明此模型内全局最优；非零时仅证明网格内最优，上界可能较松。</p>
+      <p>这不是现实收益保证，也不是概率区间。使用后的周期规则、需求、模型组合或工作时段变化后，都要重新计算。</p>
+    </details>
     ${result.target ? `<details class="reset-plan-details reset-plan-target"><summary>有更多待办时：参考日均 ${formatCompact(result.target.dailyTokens)} Token</summary>
       <p>约为当前节奏的 ${result.target.factor.toFixed(2)} 倍。在这组模拟中，可用完纳入规划的 ${result.credits.length - result.deferredCount} 次 reset，每次提前丢弃的余额不超过 5%。这是可行工作量参考，不是要求额外消耗 Token。</p>
       ${result.target.alternatives.map((alternative) => `<p><strong>${alternative.cycleMode === "restart" ? "重新起算周期" : "保留原自然重置日"}</strong> · 预计比同样高工作量下不使用 reset 多支持 ${formatCompact(alternative.gainTokens)} Token。</p>
         <ol class="reset-target-actions">${alternative.actions.map((action) => `<li>${plannerTime(action.at)} 附近 · 使用 ${plannerTime(action.expiresAt)} 到期的 reset · 届时剩余 ${action.discardedPercent.toFixed(1)}%</li>`).join("")}</ol>`).join("")}
     </details>` : ""}
+    <details class="reset-plan-details reset-plan-stress"><summary>历史波动压力检验</summary>
+      ${stress.ready ? `<p>最近 ${stress.sampleDays} 个完整日，连续 3 日分块抽样，检验同一时间表的 8 条需求路径；其中 4 条额外假设每天集中在 6 小时内工作。</p>
+        <p>相对各自路径下不重置：平均多支持 ${formatCompact(stress.meanGainPercent * result.tokensPerPercent)} Token，范围 ${formatCompact(stress.minGainPercent * result.tokensPerPercent)} 至 ${formatCompact(stress.maxGainPercent * result.tokensPerPercent)} Token；${stress.negativeCases} / 8 条路径收益为负。</p>
+        <p>固定安排平均仍有 ${formatCompact(stress.meanUnservedPercent * result.tokensPerPercent)} Token 需求未能及时满足。改为有工作且用尽时才重置，平均相对固定安排多支持 ${formatCompact(stress.meanReactiveAdvantagePercent * result.tokensPerPercent)} Token，${stress.reactiveWorseCases} / 8 条路径反而更差。</p>
+        <p>保留连续高低负载日，不使用未来信息改写各条路径的时间表。此处不是概率预测或随机最优策略；6 小时集中工作是压力假设，并非从日总量推断的作息。</p>`
+      : `<p>需要至少 14 个完整日、其中至少 4 日有用量，当前有 ${stress.sampleDays} 日。暂不生成随机波动结论。</p>`}
+    </details>
     <details class="reset-plan-details"><summary>消耗变化与计算假设</summary>
       <div class="reset-plan-table" tabindex="0" aria-label="消耗情景对比"><table><thead><tr><th>情景</th><th>预计需求</th><th>新增可支持 Token</th><th>首次重置</th></tr></thead><tbody>${scenarios}</tbody></table></div>
       <p>0.7× / 1× / 1.3× 是消耗情景，并非置信区间。日均需求均匀分摊到小时，时间表是近似安排；睡眠、停工或模型改变后，应按实际余额重算。截止到期前预留约 1 小时操作时间。</p>
       <p>只估算当前周额度覆盖的本地工作量，其他共享产品消耗和短时限流可能降低实际收益。reset 只补满余额，不与原余额相加。此处仅提供建议，兑换仍在官方客户端完成。</p>
+      <p>历史消耗可能被限流压低，真实需求可能更高。未及时满足的需求不会自动结转为未来待办。需要优先处理今天的工作时，参考续工方案；Token 日志不能确定任务价值或截止日。</p>
       ${result.policyUncertain ? "<p>该来源的重置周期规则尚未确认，上表分别计算保留原重置日与重新起算周期。主时间表采用增益较小情景，实际周期以兑换后的账户信息为准。</p>" : plan.cycleMode === "restart" ? "<p>Full reset 会改变周重置日期，按重置后立即开始工作、一个窗口时长后恢复估算。</p>" : "<p>按已注册规则保留原自然恢复时间，reset 仅恢复当前余额。</p>"}
       ${result.truncated ? "<p>计算范围最多 60 天、24 张可识别 reset；未纳入部分保留在库存，下次刷新重新评估。</p>" : ""}
     </details>`;
@@ -1927,6 +1959,7 @@ async function loadResetPlannerView() {
         percentPerDay: forecast.quotaFit?.percentPerDay,
         intervalCount: forecast.quotaFit?.intervalCount ?? Math.max(0, (forecast.quotaFit?.sampleCount || 0) - 1),
         rSquared: forecast.quotaFit?.model?.rSquared,
+        recentDailyTokens: resetStressHistory(forecast.effectiveDays),
       });
       if (generation !== resetPlannerGeneration || currentView !== "resets") return;
       sections.push(renderResetPlan(provider, forecast, result));

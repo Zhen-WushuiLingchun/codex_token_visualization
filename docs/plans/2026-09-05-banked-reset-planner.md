@@ -20,18 +20,18 @@ relative to waiting for natural resets. They are not cash savings or task qualit
 
 ## Search
 
-Forward beam search considers waiting or restoring the pool at each half-hour
-boundary, also including natural resets and each credit's one-hour expiry margin.
-Credits are interchangeable full resets and consumed earliest-expiry-first. Same-day
-multiple resets are supported. State includes remaining percentage, next natural
-reset time, credit position, served demand and discarded balance. Percentages are
-continuous; rounding only bounds retained candidate states (32 per credit position).
+The original beam search has been replaced by an exact time-grid dynamic program.
+After a full reset, remaining capacity is always 100 and the next natural reset is
+determined by its timestamp. Retain the best path for each credit index and last-reset
+timestamp, without percentage buckets or beam pruning. Complexity is O(K*N^2).
+See [optimal-control derivation](2026-09-05-reset-optimal-control.md) for the recurrence,
+proof, continuous-time supply bound, closed-form special cases and stochastic limits.
 
 Natural resets refill rather than accumulate capacity. Restarting resets change the
-next natural boundary. The no-reset path is retained explicitly; equal-work results
-prefer fewer resets and then less discarded capacity. This is bounded approximate
-optimization, not a claim of continuous global optimality. It models uniformly
-distributed hourly demand and does not infer working/sleeping hours from day totals.
+next natural boundary. Equal-work results prefer fewer resets and then less discarded
+capacity. Default resolution is half an hour plus deadline/natural-reset events; large
+inventories coarsen time explicitly rather than dropping states. The certificate is
+grid-scoped unless the schedule reaches a valid continuous-time upper bound.
 
 The bounded horizon is 60 days; at most 24 known credits enter each calculation.
 Deferred or unrecognized credits are reported. After expiry, already-restored quota
@@ -53,6 +53,10 @@ must label these as assumptions, not confirmed schedules.
 An independent planner view shows next action, no-reset/with-reset work estimates,
 unused credits, lost balance, per-credit schedule and 0.7x/1x/1.3x demand scenarios.
 These are sensitivity scenarios, not confidence intervals. Planning is read-only.
+When exhaustion is expected within a day, a separate lexicographic objective maximizes
+the next 24 hours first and the full horizon second, showing any long-term tradeoff.
+Historical three-day blocks stress-test the fixed schedule and a causal exhaustion
+response against identical demand paths; intraday bursts remain labelled assumptions.
 When the normal pace cannot use the stock, search between 1x and 8x demand for a
 feasible reference workload that uses each included reset with at most 5% discarded
 balance. Enforce both constraints during the search: paths that miss a credit's
@@ -73,3 +77,5 @@ same-day resets, expiry margins and baseline dominance. UI checks cover desktop,
 mobile, pending/error states, provider switching and global-refresh recalculation.
 Clustered-expiry regression cases also verify full-stock feasibility under small
 changes in sampling time and pace, plus explicit infeasibility at insufficient pace.
+An independent exhaustive event simulator verifies grid optimality; a seeded 100-case
+comparison found 43 strict improvements over the old beam search and no regressions.

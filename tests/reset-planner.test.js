@@ -143,3 +143,13 @@ test("full-stock constraint reports infeasible rather than dropping a credit or 
   assert.equal(result.feasible, false);
   assert.equal(result.actions.length, 0);
 });
+
+test("planner passes available credits and complete-day history into causal stress analysis", () => {
+  const result = planResets(input({ remainingPercent: 0,
+    recentDailyTokens: Array.from({ length: 28 }, (_, i) => (i % 4 + 1) * 10e6) }));
+  assert.equal(result.status, "ready");
+  assert.equal(result.stress.ready, true);
+  assert.equal(result.stress.cases.length, 8);
+  assert.ok(result.urgentPlans[0].extraTodayTokens > 0);
+  assert.ok(Number.isFinite(result.stress.meanReactiveAdvantagePercent));
+});

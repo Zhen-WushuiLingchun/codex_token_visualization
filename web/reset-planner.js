@@ -1,5 +1,7 @@
 (function attachResetPlanner(root, factory) {
-  const api = factory();
+  if (typeof module === "object" && module.exports) root.ResetOptimizer = require("./reset-optimizer.js");
+  else if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) importScripts("/reset-optimizer.js");
+  const api = factory(root.ResetOptimizer);
   if (typeof module === "object" && module.exports) module.exports = api;
   root.ResetPlanner = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
@@ -8,7 +10,7 @@
       catch (_) { root.postMessage({ id: data.id, error: "重置规划计算失败" }); }
     };
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function createResetPlanner() {
+})(typeof globalThis !== "undefined" ? globalThis : this, function createResetPlanner(optimizer) {
   "use strict";
 
   const HOUR = 3600000;
@@ -82,7 +84,7 @@
 
   // Search a bounded set of half-hour schedules, retaining distinct expiry/cycle states.
   // Percent is continuous; bucket rounding only prunes candidates, never changes usage.
-  function optimizeSchedule({ now, end, remaining, resetAt, period, percentPerDay, credits, cycleMode,
+  function optimizeBeamSchedule({ now, end, remaining, resetAt, period, percentPerDay, credits, cycleMode,
     stepMs = HOUR / 2, beamWidth = 32, maxDiscardPercent = 100, requireAllCredits = false }) {
     const ratePerMs = percentPerDay / DAY;
     const initial = { remaining, nextReset: resetAt, served: 0, creditIndex: 0, used: 0,
@@ -151,6 +153,8 @@
     };
   }
 
+  const optimizeSchedule = (input) => optimizer.solve(input);
+
   function planResets(input) {
     const now = finite(input.now) ?? Date.now();
     const policy = input.policy || {};
@@ -203,6 +207,17 @@
       const conservative = alternatives.reduce((a, b) => a.gainTokens <= b.gainTokens ? a : b);
       return { factor, dailyTokens: dailyTokens * factor, ...conservative, alternatives };
     });
+    const urgentPlans = remaining <= percentPerDay ? modes.map((cycleMode) => {
+      const urgent = optimizeSchedule({ now, end, remaining, resetAt, period, percentPerDay,
+        credits, cycleMode, objective: "urgent-24h" });
+      const regular = scenarios[1].alternatives.find((entry) => entry.cycleMode === cycleMode);
+      return { ...urgent,
+        extraTodayTokens: Math.max(0, urgent.urgentPercent - urgent.baselineUrgentPercent) * tokensPerPercent,
+        versusRegularTodayTokens: Math.max(0, urgent.urgentPercent - regular.urgentPercent) * tokensPerPercent,
+        horizonTradeoffTokens: Math.max(0, regular.servedPercent - urgent.servedPercent) * tokensPerPercent };
+    }) : [];
+    const stress = optimizer.stressTest({ now, end, remaining, resetAt, period, percentPerDay, credits,
+      cycleMode: scenarios[1].cycleMode }, scenarios[1].actions, input.recentDailyTokens);
     const fullUseAtRate = (factor) => modes.map((cycleMode) => optimizeSchedule({
       now, end, remaining, resetAt, period, percentPerDay: percentPerDay * factor, credits, cycleMode,
       maxDiscardPercent: 5, requireAllCredits: true,
@@ -237,10 +252,12 @@
       percentPerDay, dailyTokens, tokensPerPercent, fitQuality, intervalCount: input.intervalCount,
       period, scenarios, plan: scenarios[1], policyUncertain: modes.length > 1,
       target,
+      urgentPlans,
+      stress,
       truncated: end < lastExpiry + period || stock.excludedCount > 0,
       deferredCount: stock.credits.length - credits.length,
     };
   }
 
-  return { inventory, advance, optimizeSchedule, planResets };
+  return { inventory, advance, optimizeSchedule, optimizeBeamSchedule, planResets };
 });
