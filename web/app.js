@@ -31,6 +31,9 @@ const els = {
   resetCredits: document.querySelector("#resetCredits"),
   resetSummary: document.querySelector("#resetSummary"),
   resetCreditList: document.querySelector("#resetCreditList"),
+  resetPlannerView: document.querySelector("#resetPlannerView"),
+  resetPlannerProviders: document.querySelector("#resetPlannerProviders"),
+  resetPlanLink: document.querySelector("#resetPlanLink"),
   forecastView: document.querySelector("#forecastView"),
   forecastAgentTabs: document.querySelector("#forecastAgentTabs"),
   quotaWindowTabs: document.querySelector("#quotaWindowTabs"),
@@ -75,6 +78,11 @@ const VIEW_CONFIGS = {
     exportSource: "everything",
     subtitle: "本地导出和日志状态",
   },
+  resets: {
+    source: "all",
+    label: "重置规划",
+    exportSource: "everything",
+  },
 };
 
 let currentView = "overview";
@@ -85,6 +93,10 @@ let visibleProviderIds = new Set();
 let forecastAgent = null;
 let forecastSnapshots = {};
 let forecastQuotas = {};
+let resetPlannerGeneration = 0;
+let resetPlannerWorker;
+let resetPlannerRequest = 0;
+const pendingResetPlans = new Map();
 const forecastWindowSelections = {};
 let visibleUpdateId = null;
 
@@ -698,7 +710,7 @@ function fitQuotaBurn(days, quotaData, account, dailyTokenRate, modelFit = null,
   };
 }
 
-function buildForecast(agent) {
+function buildForecast(agent, requestedWindowName = forecastWindowSelections[agent]) {
   const plan = forecastPlan(agent);
   const snapshot = forecastSnapshots[agent] || {};
   const days = localUsageDays(snapshot);
@@ -719,7 +731,7 @@ function buildForecast(agent) {
   const usedTokens = hasLocalUsage ? localUsed : fallbackUsed;
   const quotaData = forecastQuotas[agent] || null;
   const quotaWindows = selectableQuotaWindows(quotaData?.latest);
-  const selectedWindow = selectedQuotaWindow(quotaData?.latest, forecastWindowSelections[agent]);
+  const selectedWindow = selectedQuotaWindow(quotaData?.latest, requestedWindowName);
   const selectedWindowName = selectedWindow?.name || null;
   const account = accountQuotaSummary(quotaData?.latest, selectedWindowName);
   const rawRate = buildForecastRate(days, plan.fallbackDailyTokens);
@@ -1697,11 +1709,13 @@ function renderUsage(data, view, bundle = {}) {
 function setViewVisibility(view) {
   const isSources = view === "sources";
   const isForecast = view === "forecast";
-  const isUsageView = !isSources && !isForecast;
+  const isResetPlanner = view === "resets";
+  const isUsageView = !isSources && !isForecast && !isResetPlanner;
   const showReset = (view === "overview" && visibleProviders().some((provider) => provider.resetCredits))
     || Boolean(providerMeta[view]?.resetCredits);
   els.forecastView.classList.toggle("is-hidden", !isForecast);
-  els.metricGrid.classList.toggle("is-hidden", isForecast);
+  els.resetPlannerView.classList.toggle("is-hidden", !isResetPlanner);
+  els.metricGrid.classList.toggle("is-hidden", isForecast || isResetPlanner);
   els.sourceCompare.classList.toggle("is-hidden", !(view === "overview" || isSources));
   els.detailGrid.classList.toggle("is-hidden", !isUsageView);
   els.lowerGrid.classList.toggle("is-hidden", !isUsageView);
@@ -1759,7 +1773,182 @@ async function loadForecastView() {
   setStatus(`已读取 ${ready} 个本地用量来源、${quotaReady} 个账户额度快照`, ready || quotaReady ? "ok" : "loading");
 }
 
+function plannerTime(value) {
+  if (!Number.isFinite(Number(value))) return "--";
+  return new Date(Number(value)).toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
+function calculateResetPlan(input) {
+  if (!resetPlannerWorker) {
+    resetPlannerWorker = new Worker("/reset-planner.js");
+    resetPlannerWorker.onmessage = ({ data }) => {
+      const pending = pendingResetPlans.get(data.id);
+      if (!pending) return;
+      pendingResetPlans.delete(data.id);
+      if (data.error) pending.reject(new Error(data.error));
+      else pending.resolve(data.result);
+    };
+    resetPlannerWorker.onerror = () => {
+      for (const pending of pendingResetPlans.values()) pending.reject(new Error("规划计算暂不可用，请重新加载页面"));
+      pendingResetPlans.clear();
+      resetPlannerWorker.terminate();
+      resetPlannerWorker = null;
+    };
+  }
+  return new Promise((resolve, reject) => {
+    const id = ++resetPlannerRequest;
+    pendingResetPlans.set(id, { resolve, reject });
+    resetPlannerWorker.postMessage({ id, input });
+  });
+}
+
+function plannerMetric(label, value, sub) {
+  return `<div class="reset-plan-metric"><span>${escapeHtml(label)}</span>
+    <strong>${escapeHtml(value)}</strong><small>${escapeHtml(sub)}</small></div>`;
+}
+
+function renderResetPlan(provider, forecast, result, loadError) {
+  const section = document.createElement("section");
+  section.className = "reset-plan-provider";
+  section.dataset.resetProvider = provider.id;
+  const header = `<div class="panel-heading"><h3>${escapeHtml(provider.label)}</h3>
+    <span class="pill">${result?.availableCount ?? "--"} 次可用</span></div>`;
+  const reasons = {
+    "credits-unavailable": "暂时无法读取重置库存，刷新后再生成建议。",
+    "credit-count-mismatch": "可用次数与明细状态不一致，暂不分配重置时间，请刷新账户状态。",
+    "no-dated-credits": "尚无到期时间和适用范围明确的 reset，暂不安排。",
+    "quota-unavailable": "当前周额度或自然重置时间缺失、已过期，请先刷新全部数据。",
+    "stale-quota": "账户额度快照已超过 6 小时，请刷新全部数据后查看安排。",
+    "stale-usage": "Token 快照过旧或与账户额度的采集时间相差超过 1 小时，请刷新全部数据后重算。",
+    "no-recent-usage": "近期尚无可用 Token 速率，等待产生用量后重新计算。",
+    "insufficient-fit": "仍需至少 2 个有效消耗区间校准额度。当前建议：有工作待完成时，优先在额度接近耗尽后使用最早到期的 reset。",
+    "weak-fit": "历史额度与 Token 的对应关系暂不稳定，等待更多有效区间后生成时间表。",
+    "unknown-reset-scope": "该来源尚未确认 reset 适用的额度窗口，暂不生成时间表。",
+  };
+  if (!result || result.status !== "ready") {
+    const message = loadError || (result?.status === "empty" ? "目前没有可用的 banked reset。"
+      : reasons[result?.reason] || "等待可用的额度与用量数据。");
+    const expiry = result?.credits?.[0]?.expiresAt;
+    section.innerHTML = `${header}<p class="reset-plan-message">${escapeHtml(message)}</p>
+      ${expiry ? `<p class="reset-plan-basis">最早到期 ${plannerTime(expiry)} · 生成具体建议前不会假定每张 reset 对应的 Token 数。</p>` : ""}`;
+    return section;
+  }
+  const plan = result.plan;
+  const first = plan.actions[0];
+  const unused = Math.max(0, result.credits.length - plan.actions.length - result.deferredCount);
+  const scopeLabel = `${result.policyUncertain ? "条件方案：" : ""}${plan.cycleMode === "restart" ? "使用后重新起算周期" : "保留原自然重置日"}`;
+  const nextLabel = first
+    ? (first.at <= Date.now() + 30 * 60000 ? "当前可考虑使用" : `${plannerTime(first.at)} 附近`)
+    : "本情景暂不需要重置";
+  const advice = first
+    ? `预计届时剩余 ${first.discardedPercent.toFixed(1)}%，优先使用 ${plannerTime(first.expiresAt)} 到期的 reset。实际额度接近该水平且有工作待完成时再使用。`
+    : "在相同的近期工作需求下，本次搜索未找到优于等待自然恢复的重置安排，可先保留库存。";
+  const schedule = result.credits.map((credit) => {
+    const action = plan.actions.find((entry) => entry.ordinal === credit.ordinal);
+    const deferred = credit.expiresAt - 3600000 >= result.end;
+    return `<tr><td>${escapeHtml(credit.title)}<small>${plannerTime(credit.expiresAt)} 到期</small></td>
+      <td>${action ? plannerTime(action.at) : deferred ? "规划期外" : "暂不安排"}</td>
+      <td>${action ? `${action.discardedPercent.toFixed(1)}%` : "--"}</td>
+      <td>${action ? plannerTime(action.nextResetAt) : "--"}</td></tr>`;
+  }).join("");
+  const scenarios = result.scenarios.map((scenario, index) => {
+    const alternatives = scenario.alternatives;
+    const low = Math.min(...alternatives.map((entry) => entry.gainTokens));
+    const high = Math.max(...alternatives.map((entry) => entry.gainTokens));
+    const benefit = high - low > 1 ? `${formatCompact(low)}–${formatCompact(high)}` : formatCompact(low);
+    return `<tr><td>${["较低 · 0.7×", "近期常态 · 1×", "较高 · 1.3×"][index]}</td>
+      <td>${formatCompact(scenario.dailyTokens)} / 日</td><td>+${benefit}</td>
+      <td>${alternatives.map((entry) => `${result.policyUncertain ? (entry.cycleMode === "restart" ? "重新起算：" : "原定周期：") : ""}${entry.actions[0] ? plannerTime(entry.actions[0].at) : "暂不需要"}`).join("<br>")}</td></tr>`;
+  }).join("");
+  section.innerHTML = `${header}
+    <div class="reset-plan-advice"><span class="section-label">${escapeHtml(scopeLabel)}</span>
+      <h4>${escapeHtml(nextLabel)}</h4><p>${escapeHtml(advice)}</p></div>
+    <div class="reset-plan-metrics">
+      ${plannerMetric("预计多支持 Token", `+${formatCompact(plan.gainTokens)}`, `规划至 ${plannerTime(result.end)}`)}
+      ${plannerMetric("不使用 / 按方案使用", `${formatCompact(plan.baselineTokens)} / ${formatCompact(plan.servedTokens)}`, "相同工作需求、相同时间范围")}
+      ${plannerMetric("计划使用 / 暂不安排", `${plan.actions.length} / ${unused} 次`, `另有 ${result.excludedCount + result.deferredCount} 次范围或期限待确认`)}
+      ${plannerMetric("提前重置丢弃余额", `${plan.discardedPercent.toFixed(1)}%`, "各次剩余额度之和，可超过 100%")}
+    </div>
+    <div class="reset-plan-table" tabindex="0" aria-label="${escapeHtml(provider.label)} 重置时间表">
+      <table><thead><tr><th>Reset</th><th>建议时间</th><th>届时剩余</th><th>新的自然重置</th></tr></thead><tbody>${schedule}</tbody></table>
+    </div>
+    <p class="reset-plan-basis">当前剩余 ${result.remainingPercent.toFixed(0)}% · 自然重置 ${plannerTime(result.resetAt)} · ${result.intervalCount} 个有效区间 · 拟合 R² ${result.fitQuality.toFixed(2)} · ${forecast.modelFit?.active ? "已按近期模型组合换算" : "按原始 Token 拟合"}</p>
+    ${result.target ? `<details class="reset-plan-details reset-plan-target"><summary>有更多待办时：参考日均 ${formatCompact(result.target.dailyTokens)} Token</summary>
+      <p>约为当前节奏的 ${result.target.factor.toFixed(2)} 倍。在这组模拟中，可用完纳入规划的 ${result.credits.length - result.deferredCount} 次 reset，每次提前丢弃的余额不超过 5%。这是可行工作量参考，不是要求额外消耗 Token。</p>
+      ${result.target.alternatives.map((alternative) => `<p><strong>${alternative.cycleMode === "restart" ? "重新起算周期" : "保留原自然重置日"}</strong> · 预计比同样高工作量下不使用 reset 多支持 ${formatCompact(alternative.gainTokens)} Token。</p>
+        <ol class="reset-target-actions">${alternative.actions.map((action) => `<li>${plannerTime(action.at)} 附近 · 使用 ${plannerTime(action.expiresAt)} 到期的 reset · 届时剩余 ${action.discardedPercent.toFixed(1)}%</li>`).join("")}</ol>`).join("")}
+    </details>` : ""}
+    <details class="reset-plan-details"><summary>消耗变化与计算假设</summary>
+      <div class="reset-plan-table" tabindex="0" aria-label="消耗情景对比"><table><thead><tr><th>情景</th><th>预计需求</th><th>新增可支持 Token</th><th>首次重置</th></tr></thead><tbody>${scenarios}</tbody></table></div>
+      <p>0.7× / 1× / 1.3× 是消耗情景，并非置信区间。日均需求均匀分摊到小时，时间表是近似安排；睡眠、停工或模型改变后，应按实际余额重算。截止到期前预留约 1 小时操作时间。</p>
+      <p>只估算当前周额度覆盖的本地工作量，其他共享产品消耗和短时限流可能降低实际收益。reset 只补满余额，不与原余额相加。此处仅提供建议，兑换仍在官方客户端完成。</p>
+      ${result.policyUncertain ? "<p>该来源的重置周期规则尚未确认，上表分别计算保留原重置日与重新起算周期。主时间表采用增益较小情景，实际周期以兑换后的账户信息为准。</p>" : plan.cycleMode === "restart" ? "<p>Full reset 会改变周重置日期，按重置后立即开始工作、一个窗口时长后恢复估算。</p>" : "<p>按已注册规则保留原自然恢复时间，reset 仅恢复当前余额。</p>"}
+      ${result.truncated ? "<p>计算范围最多 60 天、24 张可识别 reset；未纳入部分保留在库存，下次刷新重新评估。</p>" : ""}
+    </details>`;
+  return section;
+}
+
+async function loadResetPlannerView() {
+  const generation = resetPlannerGeneration;
+  const providers = visibleProviders().filter((provider) => provider.resetCredits);
+  els.resetPlannerProviders.replaceChildren(emptyState("正在分析重置库存与历史消耗..."));
+  els.sourcePath.textContent = "本地用量 + 账户额度 + banked reset";
+  setStatus("正在计算重置安排...");
+  if (!providers.length) {
+    els.resetPlannerProviders.replaceChildren(emptyState("当前显示的数据源没有可用的重置规划来源。"));
+    setStatus("当前没有支持 banked reset 的显示来源", "ok");
+    return;
+  }
+  const sections = [];
+  for (const provider of providers) {
+    try {
+      const [usage, quota, credits] = await Promise.all([
+        fetchUsage(provider.id), fetchQuota(provider.id),
+        fetch(`/api/reset-credits?source=${encodeURIComponent(provider.id)}`, { cache: "no-store" })
+          .then((response) => response.json()),
+      ]);
+      if (generation !== resetPlannerGeneration || currentView !== "resets") return;
+      forecastSnapshots[provider.id] = usage;
+      forecastQuotas[provider.id] = quota;
+      const policy = credits.planningPolicy;
+      const window = (quota?.latest?.windows || []).find((entry) => policy?.windowNames?.includes(entry.name)
+        && Number(entry.windowDurationMins) >= 10080 && !entry.modelPatterns?.length);
+      const forecast = buildForecast(provider.id, window?.name);
+      const usedPercent = inputNumberOrNull(window?.usedPercent);
+      const result = await calculateResetPlan({
+        credits, policy,
+        remainingPercent: inputNumberOrNull(window?.remainingPercent)
+          ?? (usedPercent === null ? null : 100 - usedPercent),
+        resetAt: window?.resetsAt, windowDurationMins: window?.windowDurationMins,
+        fetchedAt: quota?.latest?.fetchedAt, dailyTokens: forecast.rawRate.weightedRate,
+        usageFetchedAt: usage.latestFile?.modifiedAt ?? null,
+        percentPerDay: forecast.quotaFit?.percentPerDay,
+        intervalCount: forecast.quotaFit?.intervalCount ?? Math.max(0, (forecast.quotaFit?.sampleCount || 0) - 1),
+        rSquared: forecast.quotaFit?.model?.rSquared,
+      });
+      if (generation !== resetPlannerGeneration || currentView !== "resets") return;
+      sections.push(renderResetPlan(provider, forecast, result));
+    } catch (error) {
+      sections.push(renderResetPlan(provider, null, null, `暂时无法分析：${error.message}`));
+    }
+    // Yield between providers so navigating away stays responsive during a large search.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (generation !== resetPlannerGeneration || currentView !== "resets") return;
+  els.resetPlannerProviders.replaceChildren(...sections);
+  setStatus("重置规划已更新，实际使用前请核对当前余额与到期时间", "ok");
+}
+
 async function loadView(view = currentView) {
+  resetPlannerGeneration += 1;
+  if (resetPlannerWorker && pendingResetPlans.size) {
+    resetPlannerWorker.terminate();
+    resetPlannerWorker = null;
+    for (const pending of pendingResetPlans.values()) pending.reject(new Error("已切换页面，取消旧规划"));
+    pendingResetPlans.clear();
+  }
   const hiddenProviderView = providerMeta[view] && !visibleProviderIds.has(view);
   const unavailableForecast = view === "forecast" && !forecastAgent;
   currentView = VIEW_CONFIGS[view] && !hiddenProviderView && !unavailableForecast ? view : "overview";
@@ -1768,6 +1957,10 @@ async function loadView(view = currentView) {
   setViewVisibility(currentView);
 
   try {
+    if (currentView === "resets") {
+      await loadResetPlannerView();
+      return;
+    }
     if (currentView === "sources") {
       await loadSourcesView();
       return;
@@ -1880,6 +2073,12 @@ els.viewTabs.addEventListener("click", (event) => {
   const view = tab.dataset.view || "overview";
   history.replaceState(null, "", `#${view}`);
   loadView(view).then(loadResetCredits);
+});
+
+els.resetPlanLink.addEventListener("click", (event) => {
+  event.preventDefault();
+  history.replaceState(null, "", "#resets");
+  loadView("resets");
 });
 
 els.forecastAgentTabs.addEventListener("click", (event) => {

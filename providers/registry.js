@@ -38,6 +38,11 @@ const PROVIDERS = Object.freeze([
     trendTitle: "Codex 最近使用量",
     breakdownTitle: "Codex Token 构成",
     resetCredits: true,
+    resetPlanning: {
+      cycleMode: "restart",
+      windowNames: ["primary", "secondary"],
+      creditTitles: ["Full reset"],
+    },
     detectPaths: [process.env.CODEX_AUTH_PATH || path.join(os.homedir(), ".codex", "auth.json")],
     usage: {
       adapter: "ccusage",
@@ -207,6 +212,11 @@ const PROVIDERS = Object.freeze([
     breakdownTitle: "Grok Build Token 构成",
     forecast: true,
     resetCredits: true,
+    resetPlanning: {
+      cycleMode: "unknown",
+      windowNames: ["weekly_limit"],
+      creditTitles: ["Grok usage-limit reset"],
+    },
     detectPaths: [
       GROK_BUILD_SESSION_ROOT,
       path.join(GROK_HOME, "bin", process.platform === "win32" ? "grok.exe" : "grok"),

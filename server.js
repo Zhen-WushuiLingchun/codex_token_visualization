@@ -764,7 +764,14 @@ const server = http.createServer((req, res) => {
         ? Promise.resolve(storedGrokResetCredits())
         : fetchCodexResetCredits();
       request
-        .then((payload) => sendJson(res, payload.ok ? 200 : payload.status || 500, payload))
+        .then((payload) => sendJson(res, payload.ok ? 200 : payload.status || 500, {
+          ...payload,
+          planningPolicy: provider.resetPlanning ? {
+            cycleMode: provider.resetPlanning.cycleMode,
+            windowNames: provider.resetPlanning.windowNames,
+            creditTitles: provider.resetPlanning.creditTitles,
+          } : null,
+        }))
         .catch((error) => {
           sendJson(res, 500, {
             ok: false,
