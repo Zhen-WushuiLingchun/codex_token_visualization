@@ -6,10 +6,12 @@ const { spawn } = require("node:child_process");
 const {
   PROVIDERS,
   ALL_SOURCES,
+  AUTO_EXPORT_SOURCES,
   publicProvider,
 } = require("./providers/registry.js");
 const { readDisplaySettings, writeDisplaySettings } = require("./lib/display-settings.js");
 const { checkForUpdate } = require("./lib/update-check.js");
+const Billing = require("./web/billing.js");
 
 const ROOT = __dirname;
 const WEB_ROOT = path.join(ROOT, "web");
@@ -34,7 +36,7 @@ const SOURCE_CONFIGS = Object.fromEntries(
     manualOnly: false,
   }])
 );
-const EXPORT_SEQUENCE = ALL_SOURCES.filter((entry) => entry.usage.adapter === "ccusage").map((entry) => entry.id);
+const EXPORT_SEQUENCE = AUTO_EXPORT_SOURCES.map((entry) => entry.id);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -543,29 +545,40 @@ function exportUsageSnapshot(source = "codex") {
 }
 
 async function exportEverything() {
-  const results = [];
-  const snapshots = {};
-
-  for (const source of EXPORT_SEQUENCE) {
+  const entries = await Promise.all(EXPORT_SEQUENCE.map(async (source) => {
     try {
       const result = await exportUsageSnapshot(source);
-      results.push({ source, ok: true, stdout: result.stdout, stderr: result.stderr });
-      snapshots[source] = result.snapshot;
-    } catch (error) {
-      results.push({
+      return {
         source,
-        ok: false,
-        code: error.code,
-        error: error.message,
-        stdout: error.stdout || "",
-        stderr: error.stderr || "",
-      });
+        result: { source, ok: true, stdout: result.stdout, stderr: result.stderr },
+        snapshot: result.snapshot,
+      };
+    } catch (error) {
+      let snapshot = null;
       try {
-        snapshots[source] = latestUsageSnapshot(source);
+        snapshot = latestUsageSnapshot(source);
       } catch (_) {
-        snapshots[source] = null;
+        snapshot = null;
       }
+      return {
+        source,
+        result: {
+          source,
+          ok: false,
+          code: error.code,
+          error: error.message,
+          stdout: error.stdout || "",
+          stderr: error.stderr || "",
+        },
+        snapshot,
+      };
     }
+  }));
+
+  const results = entries.map((entry) => entry.result);
+  const snapshots = {};
+  for (const entry of entries) {
+    snapshots[entry.source] = entry.snapshot;
   }
 
   const failures = results.filter((result) => !result.ok);
@@ -574,7 +587,7 @@ async function exportEverything() {
     partial: failures.length > 0 && failures.length < results.length,
     results,
     snapshots,
-    snapshot: snapshots.all || snapshots.codex || snapshots.claude || null,
+    snapshot: snapshots.codex || snapshots.claude || null,
   };
 }
 
@@ -694,6 +707,11 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (req.method === "GET" && req.url.startsWith("/api/billing")) {
+      sendJson(res, 200, { ok: true, ...Billing.catalog() });
+      return;
+    }
+
     if (req.url === "/api/display-settings") {
       if (req.method === "GET") {
         sendJson(res, 200, { ok: true, settings: readDisplaySettings(DISPLAY_SETTINGS_PATH, PROVIDERS) });
@@ -727,7 +745,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { ok: false, error: "Unknown source" });
         return;
       }
-      sendJson(res, 200, latestUsageSnapshot(source));
+      sendJson(res, 200, Billing.annotateSnapshot(latestUsageSnapshot(source)));
       return;
     }
 

@@ -5,6 +5,10 @@ const els = {
   statusDot: document.querySelector("#statusDot"),
   sourcePath: document.querySelector("#sourcePath"),
   sourceCompare: document.querySelector("#sourceCompare"),
+  calendarHeatmapPanel: document.querySelector("#calendarHeatmapPanel"),
+  calendarHeatmap: document.querySelector("#calendarHeatmap"),
+  heatmapRangePill: document.querySelector("#heatmapRangePill"),
+  heatmapSummary: document.querySelector("#heatmapSummary"),
   detailGrid: document.querySelector("#detailGrid"),
   lowerGrid: document.querySelector("#lowerGrid"),
   tablePanel: document.querySelector("#tablePanel"),
@@ -17,6 +21,12 @@ const els = {
   breakdownLabel: document.querySelector("#breakdownLabel"),
   breakdownTitle: document.querySelector("#breakdownTitle"),
   modelsLabel: document.querySelector("#modelsLabel"),
+  billingAsOfPill: document.querySelector("#billingAsOfPill"),
+  billingPanel: document.querySelector("#billingPanel"),
+  billingTitle: document.querySelector("#billingTitle"),
+  billingRatePill: document.querySelector("#billingRatePill"),
+  billingNote: document.querySelector("#billingNote"),
+  billingRows: document.querySelector("#billingRows"),
   modelList: document.querySelector("#modelList"),
   snapshotList: document.querySelector("#snapshotList"),
   fileCountPill: document.querySelector("#fileCountPill"),
@@ -110,6 +120,16 @@ function forecastTabElements() {
 
 function visibleProviders() {
   return providerCatalog.filter((provider) => visibleProviderIds.has(provider.id));
+}
+
+function overviewProviders() {
+  const groups = new Set();
+  return visibleProviders().filter((provider) => {
+    if (!provider.overviewGroup) return true;
+    if (groups.has(provider.overviewGroup)) return false;
+    groups.add(provider.overviewGroup);
+    return true;
+  });
 }
 
 function configureProviders(providers, requestedVisibleProviders) {
@@ -298,11 +318,28 @@ function dayDate(day) {
 }
 
 function dayCost(day) {
-  return Number(day?.costUSD ?? day?.totalCost ?? day?.cost) || 0;
+  return Billing.estimateDayCost(day).usd;
+}
+
+function chartCost(day) {
+  const estimated = Billing.estimateDayCost(day);
+  return currentView === "overview" ? estimated.usd : estimated.amount;
 }
 
 function totalsCost(totals, days) {
-  return Number(totals?.costUSD ?? totals?.totalCost ?? totals?.cost) || days.reduce((sum, day) => sum + dayCost(day), 0);
+  if (days.length) return Billing.estimatePeriodCost(days).amount;
+  return Number(totals?.costUSD ?? totals?.totalCost ?? totals?.cost) || 0;
+}
+
+function costCurrency(days, totals) {
+  if (days.length) return Billing.estimatePeriodCost(days).currency;
+  return totals?.costCurrency || "USD";
+}
+
+function billingCaption(days = []) {
+  const timed = days.some((day) => day?.timedBilling || day?.costCurrency === "CNY");
+  if (timed) return `按 ${Billing.PRICE_AS_OF} 官方价卡、请求时间峰谷计价`;
+  return `按 ${Billing.PRICE_AS_OF} 官方 API 单价估算，不等同订阅额度`;
 }
 
 function totalsTokens(totals, days) {
@@ -349,10 +386,10 @@ function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
 }
 
-function formatCost(value) {
-  return new Intl.NumberFormat("en-US", {
+function formatCost(value, currency = "USD") {
+  return new Intl.NumberFormat(currency === "CNY" ? "zh-CN" : "en-US", {
     style: "currency",
-    currency: "USD",
+    currency: currency === "CNY" ? "CNY" : "USD",
     maximumFractionDigits: 2,
   }).format(Number(value) || 0);
 }
@@ -1269,7 +1306,7 @@ function renderMetrics(days, totals, view, bundle = {}) {
     renderMetric("最新日期", "--", "暂无 JSON 快照");
     renderMetric("累计 Token", "--", `运行一次 ${config.label} 导出后显示`);
     renderMetric("缓存读取占比", "--", "基于 ccusage daily");
-    renderMetric("费用估算", "--", "第三方本地估算");
+    renderMetric("费用估算", "--", billingCaption(days));
     return;
   }
 
@@ -1277,6 +1314,7 @@ function renderMetrics(days, totals, view, bundle = {}) {
   const latestTotal = Number(latest.totalTokens) || 0;
   const totalTokenCount = totalsTokens(totals, days);
   const totalCost = totalsCost(totals, days);
+  const currency = costCurrency(days, totals);
   const totalParts = tokenParts(totals?.totalTokens ? totals : days.reduce(
     (sum, day) => {
       const parts = tokenParts(day);
@@ -1298,16 +1336,16 @@ function renderMetrics(days, totals, view, bundle = {}) {
 
     renderMetric("今日总用量", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(dayCost(latest))}`);
     renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 条记录 ${formatCompact(recentTotal)}`);
-    renderMetric("近 30 日费用", formatCost(recentCost), `累计估算 ${formatCost(totalCost)}`);
+    renderMetric("近 30 日费用", formatCost(recentCost), `累计 ${formatCost(totalCost)} · ${billingCaption(days)}`);
     renderMetric("活跃来源", `${sourceCount || activeAgentCount(days)} 个`, visibleProviders().map((entry) => entry.shortLabel || entry.label).join(" / "));
     return;
   }
 
   const recentTotal = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
-  renderMetric("最新日期", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(dayCost(latest))}`);
+  renderMetric("最新日期", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(Billing.estimateDayCost(latest).amount, currency)}`);
   renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 条记录 ${formatCompact(recentTotal)}`);
   renderMetric("缓存读取占比", formatPercent(cacheShare), `${formatCompact(totalParts.cachedInput)} cache read`);
-  renderMetric("费用估算", formatCost(totalCost), "本地 JSONL 统计，不等同订阅额度");
+  renderMetric("费用估算", formatCost(totalCost, currency), billingCaption(days));
 }
 
 function renderTrend(days, label) {
@@ -1321,7 +1359,7 @@ function renderTrend(days, label) {
 
   const recent = days.slice(-24);
   const maxTokens = Math.max(...recent.map((day) => Number(day.totalTokens) || 0), 1);
-  const maxCost = Math.max(...recent.map(dayCost), 1);
+  const maxCost = Math.max(...recent.map(chartCost), 1);
   const width = 900;
   const height = 300;
   const left = 42;
@@ -1372,7 +1410,7 @@ function renderTrend(days, label) {
 
   recent.forEach((day, index) => {
     const x = left + index * step;
-    const costHeight = (dayCost(day) / maxCost) * (chartHeight * 0.42);
+    const costHeight = (chartCost(day) / maxCost) * (chartHeight * 0.42);
     const bar = document.createElementNS(svg.namespaceURI, "rect");
     bar.setAttribute("class", "cost-bar");
     bar.setAttribute("x", x - 7);
@@ -1412,12 +1450,98 @@ function renderTrend(days, label) {
     svg.appendChild(dot);
 
     const title = document.createElementNS(svg.namespaceURI, "title");
-    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens, ${formatCost(dayCost(point.day))}`;
+    const estimated = Billing.estimateDayCost(point.day);
+    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens, ${formatCost(estimated.amount, estimated.currency)}`;
     dot.appendChild(title);
   });
 
   els.rangePill.textContent = `${dayDate(recent[0])} - ${dayDate(recent.at(-1))}`;
   els.trendChart.appendChild(svg);
+}
+
+function renderCalendarHeatmap(days) {
+  els.calendarHeatmap.replaceChildren();
+  const heatmapApi = globalThis.CalendarHeatmap;
+  if (!heatmapApi || !days.length) {
+    els.heatmapRangePill.textContent = "--";
+    els.heatmapSummary.textContent = "暂无每日用量记录";
+    els.calendarHeatmap.setAttribute("aria-label", "暂无每日 Token 用量记录");
+    els.calendarHeatmap.appendChild(emptyState("暂无每日用量记录"));
+    return;
+  }
+
+  const model = heatmapApi.buildCalendarHeatmap(days, {
+    today: localDateKey(),
+    minWeeks: 13,
+    maxWeeks: 53,
+  });
+  if (!model.cells.length) {
+    els.heatmapRangePill.textContent = "--";
+    els.heatmapSummary.textContent = "暂无每日用量记录";
+    els.calendarHeatmap.setAttribute("aria-label", "暂无每日 Token 用量记录");
+    els.calendarHeatmap.appendChild(emptyState("暂无每日用量记录"));
+    return;
+  }
+
+  els.heatmapRangePill.textContent = `${model.rangeStart} - ${model.rangeEnd}`;
+  els.heatmapSummary.textContent = `${model.weekCount} 周共 ${formatCompact(model.totalTokens)} Token · ${model.activeDays} 个活跃日`;
+  els.calendarHeatmap.setAttribute(
+    "aria-label",
+    `${model.rangeStart}至${model.rangeEnd}的每日 Token 用量，共${model.activeDays}个活跃日`
+  );
+
+  const shell = document.createElement("div");
+  shell.className = "calendar-heatmap-shell";
+
+  const weekdays = document.createElement("div");
+  weekdays.className = "calendar-heatmap-weekdays";
+  const spacer = document.createElement("span");
+  spacer.setAttribute("aria-hidden", "true");
+  weekdays.appendChild(spacer);
+  ["一", "二", "三", "四", "五", "六", "日"].forEach((label, index) => {
+    const dayLabel = document.createElement("span");
+    dayLabel.textContent = index % 2 === 0 || index === 6 ? label : "";
+    dayLabel.setAttribute("aria-hidden", "true");
+    weekdays.appendChild(dayLabel);
+  });
+  shell.appendChild(weekdays);
+
+  const content = document.createElement("div");
+  content.className = "calendar-heatmap-content";
+  content.style.setProperty("--week-count", model.weekCount);
+
+  const months = document.createElement("div");
+  months.className = "calendar-heatmap-months";
+  months.setAttribute("aria-hidden", "true");
+  model.months.forEach((month) => {
+    const label = document.createElement("span");
+    label.className = "calendar-heatmap-month";
+    label.style.gridColumn = String(month.column);
+    label.textContent = month.label;
+    months.appendChild(label);
+  });
+  content.appendChild(months);
+
+  const grid = document.createElement("div");
+  grid.className = "calendar-heatmap-grid";
+  model.cells.forEach((day) => {
+    const cell = document.createElement("span");
+    cell.className = `calendar-heatmap-cell level-${day.level}`;
+    if (day.outside) {
+      cell.classList.add("is-outside");
+      cell.setAttribute("aria-hidden", "true");
+    } else {
+      const description = `${day.date} · ${formatNumber(day.totalTokens)} Token`;
+      cell.title = description;
+      cell.setAttribute("aria-label", description);
+      cell.setAttribute("role", "img");
+      if (day.date === localDateKey()) cell.classList.add("is-today");
+    }
+    grid.appendChild(cell);
+  });
+  content.appendChild(grid);
+  shell.appendChild(content);
+  els.calendarHeatmap.appendChild(shell);
 }
 
 function renderBreakdown(days) {
@@ -1477,27 +1601,7 @@ function renderBreakdown(days) {
 }
 
 function collectModels(days) {
-  const totals = new Map();
-  days.forEach((day) => {
-    if (day.models && typeof day.models === "object") {
-      Object.entries(day.models).forEach(([name, model]) => {
-        totals.set(name, (totals.get(name) || 0) + (Number(model.totalTokens) || 0));
-      });
-    }
-
-    if (Array.isArray(day.modelBreakdowns)) {
-      day.modelBreakdowns.forEach((model) => {
-        const name = model.modelName || model.name || "unknown";
-        const parts = tokenParts(model);
-        const total = Number(model.totalTokens) || parts.displayTotal;
-        totals.set(name, (totals.get(name) || 0) + total);
-      });
-    }
-  });
-
-  return [...totals.entries()]
-    .map(([name, total]) => ({ name, total }))
-    .sort((a, b) => b.total - a.total);
+  return Billing.collectModelCosts(days);
 }
 
 function modelNames(day) {
@@ -1511,6 +1615,9 @@ function modelNames(day) {
 
 function renderModels(days) {
   els.modelList.replaceChildren();
+  if (els.billingAsOfPill) {
+    els.billingAsOfPill.textContent = days.length ? `${Billing.PRICE_AS_OF} API 单价` : "--";
+  }
   const models = collectModels(days);
 
   if (!models.length) {
@@ -1522,16 +1629,74 @@ function renderModels(days) {
   models.forEach((model) => {
     const row = document.createElement("div");
     row.className = "model-row";
+    const rateText = model.matched
+      ? `${escapeHtml(model.rate.label)} · ${escapeHtml(Billing.formatRateLabel(model.rate))}`
+      : "无公开单价";
     row.innerHTML = `
       <div class="model-main">
         <div class="model-name">${escapeHtml(model.name)}</div>
+        <div class="model-rate">${rateText}</div>
         <div class="model-track">
           <div class="model-fill" style="width:${(model.total / max) * 100}%"></div>
         </div>
       </div>
-      <div class="model-value">${formatCompact(model.total)}</div>
+      <div class="model-value">
+        ${formatCompact(model.total)}
+        <span class="model-cost">${formatCost(model.amount || model.usd, model.currency || "USD")}</span>
+      </div>
     `;
     els.modelList.appendChild(row);
+  });
+}
+
+function renderBillingRates(view, days) {
+  if (!els.billingRows) return;
+  const rates = Billing.ratesForProvider(view);
+  const routes = Billing.routesForProvider(view);
+  const used = Billing.usedRateIds(days);
+  els.billingRatePill.textContent = `${Billing.PRICE_AS_OF} · ${rates.length} 个型号 · ${routes.length} 条路由`;
+  els.billingTitle.textContent = view === "overview" ? "全部官方 API 单价" : `${(VIEW_CONFIGS[view] || {}).label || "官方"} API 单价`;
+  const hasCny = rates.some((rate) => rate.currency === "CNY");
+  els.billingNote.textContent = used.size
+    ? `单价为每百万 token。Kimi 与 DeepSeek 为人民币价，其余为美元。当前账本用到 ${used.size} 个型号，已在表中标出。`
+    : hasCny
+      ? "Kimi 与 DeepSeek 保留官方人民币价；其余为美元。当前页还没有对上账本里的型号。"
+      : "单价为每百万 token 的美元价，用来估算本地 Token 成本。当前页还没有对上账本里的型号。";
+
+  els.billingRows.replaceChildren();
+  rates.forEach((rate) => {
+    const row = document.createElement("tr");
+    if (used.has(rate.id)) row.className = "is-used";
+    const currency = rate.currency || "USD";
+    row.innerHTML = `
+      <td>${escapeHtml(rate.label)}</td>
+      <td>${escapeHtml(Billing.vendorLabel(rate.vendor))}</td>
+      <td><code>${escapeHtml((rate.routes || [rate.id]).join(" / "))}</code></td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.input, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.cacheRead, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.cacheWrite, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.output, currency))}</td>
+      <td>${escapeHtml(rate.note || "标准价")}</td>
+    `;
+    els.billingRows.appendChild(row);
+  });
+  routes.forEach((route) => {
+    const row = document.createElement("tr");
+    row.className = "is-route-rule";
+    const effective = route.effectiveAt
+      ? ` · ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Shanghai" }).format(new Date(route.effectiveAt))} 起`
+      : "";
+    row.innerHTML = `
+      <td>动态路由</td>
+      <td>${escapeHtml((VIEW_CONFIGS[route.provider] || {}).label || route.provider)}</td>
+      <td><code>${escapeHtml(route.route)} → ${escapeHtml(route.destinations.join(" / "))}</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>${escapeHtml(`${route.note}${effective}`)}</td>
+    `;
+    els.billingRows.appendChild(row);
   });
 }
 
@@ -1575,6 +1740,7 @@ function renderTable(days) {
     .forEach((day) => {
       const parts = tokenParts(day);
       const models = modelNames(day).join(", ") || "--";
+      const estimated = Billing.estimateDayCost(day);
       const row = document.createElement("tr");
       row.innerHTML = `
         <td>${escapeHtml(dayDate(day))}</td>
@@ -1584,7 +1750,7 @@ function renderTable(days) {
         <td>${formatNumber(parts.cacheCreationInput)}</td>
         <td>${formatNumber(day.outputTokens)}</td>
         <td>${formatNumber(day.reasoningOutputTokens)}</td>
-        <td>${formatCost(dayCost(day))}</td>
+        <td>${formatCost(estimated.amount, estimated.currency)}</td>
         <td>${escapeHtml(models)}</td>
       `;
       els.dailyRows.appendChild(row);
@@ -1595,9 +1761,9 @@ function sourceSummary(snapshot) {
   const days = sortDays(snapshot?.daily || []);
   const latest = days.at(-1);
   const total = totalsTokens(snapshot?.totals || {}, days);
-  const cost = totalsCost(snapshot?.totals || {}, days);
+  const period = Billing.estimatePeriodCost(days);
   const recent = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
-  return { days, latest, total, cost, recent };
+  return { days, latest, total, cost: period.amount, currency: period.currency, recent };
 }
 
 function dayModels(day) {
@@ -1674,7 +1840,7 @@ function renderOverviewSources(bundle) {
         <p>${summary.latest ? `${dayDate(summary.latest)} 最新 ${formatCompact(summary.latest.totalTokens)}` : "还没有本地快照"}</p>
       </div>
       <div class="source-card-meta">
-        <span>${formatCost(summary.cost)}</span>
+        <span>${formatCost(summary.cost, summary.currency)}</span>
         <span>近 30 条 ${formatCompact(summary.recent)}</span>
       </div>
     `;
@@ -1720,8 +1886,10 @@ function renderUsage(data, view, bundle = {}) {
 
   renderMetrics(days, data.totals || {}, view, bundle);
   renderTrend(days, config.label);
+  if (view === "overview") renderCalendarHeatmap(days);
   renderBreakdown(days);
   renderModels(days);
+  renderBillingRates(view, days);
   renderSnapshots(data);
   renderTable(days);
 
@@ -1740,9 +1908,11 @@ function setViewVisibility(view) {
   els.forecastView.classList.toggle("is-hidden", !isForecast);
   els.resetPlannerView.classList.toggle("is-hidden", !isResetPlanner);
   els.metricGrid.classList.toggle("is-hidden", isForecast || isResetPlanner);
+  els.calendarHeatmapPanel.classList.toggle("is-hidden", view !== "overview");
   els.sourceCompare.classList.toggle("is-hidden", !(view === "overview" || isSources));
   els.detailGrid.classList.toggle("is-hidden", !isUsageView);
   els.lowerGrid.classList.toggle("is-hidden", !isUsageView);
+  els.billingPanel.classList.toggle("is-hidden", !isUsageView);
   els.tablePanel.classList.toggle("is-hidden", !isUsageView);
   els.resetCredits.classList.toggle("is-hidden", !showReset);
 }
@@ -2034,7 +2204,7 @@ async function loadView(view = currentView) {
     setStatus(`正在读取 ${config.label} JSON...`);
 
     if (currentView === "overview") {
-      const entries = await Promise.all(visibleProviders().map(async (provider) => [provider.id, await fetchUsage(provider.id)]));
+      const entries = await Promise.all(overviewProviders().map(async (provider) => [provider.id, await fetchUsage(provider.id)]));
       const bundle = Object.fromEntries(entries);
       const overview = mergeUsageSnapshots(bundle);
       renderUsage(overview, "overview", bundle);
