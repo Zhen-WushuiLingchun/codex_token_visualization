@@ -11,17 +11,16 @@
   const timestamp = (value) => value ? Date.parse(value) : NaN;
   const dateKey = (value) => {
     const date = new Date(value);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
   };
   function dayStart(key) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(key || "")) return NaN;
     const [year, month, day] = key.split("-").map(Number);
-    const value = new Date(year, month - 1, day).getTime();
+    const value = Date.UTC(year, month - 1, day) - 8 * HOUR;
     return dateKey(value) === key ? value : NaN;
   }
   function shiftDay(key, count) {
-    const date = new Date(dayStart(key));
-    date.setDate(date.getDate() + count);
+    const date = new Date(dayStart(key) + count * 24 * HOUR);
     return dateKey(date);
   }
   const sameCycle = (a, b) => Math.abs(a.reset - b.reset) <= 5 * 60000

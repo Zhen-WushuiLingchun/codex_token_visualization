@@ -17,6 +17,12 @@ const els = {
   breakdownLabel: document.querySelector("#breakdownLabel"),
   breakdownTitle: document.querySelector("#breakdownTitle"),
   modelsLabel: document.querySelector("#modelsLabel"),
+  billingAsOfPill: document.querySelector("#billingAsOfPill"),
+  billingPanel: document.querySelector("#billingPanel"),
+  billingTitle: document.querySelector("#billingTitle"),
+  billingRatePill: document.querySelector("#billingRatePill"),
+  billingNote: document.querySelector("#billingNote"),
+  billingRows: document.querySelector("#billingRows"),
   modelList: document.querySelector("#modelList"),
   snapshotList: document.querySelector("#snapshotList"),
   fileCountPill: document.querySelector("#fileCountPill"),
@@ -110,6 +116,16 @@ function forecastTabElements() {
 
 function visibleProviders() {
   return providerCatalog.filter((provider) => visibleProviderIds.has(provider.id));
+}
+
+function overviewProviders() {
+  const groups = new Set();
+  return visibleProviders().filter((provider) => {
+    if (!provider.overviewGroup) return true;
+    if (groups.has(provider.overviewGroup)) return false;
+    groups.add(provider.overviewGroup);
+    return true;
+  });
 }
 
 function configureProviders(providers, requestedVisibleProviders) {
@@ -298,11 +314,32 @@ function dayDate(day) {
 }
 
 function dayCost(day) {
-  return Number(day?.costUSD ?? day?.totalCost ?? day?.cost) || 0;
+  return Billing.estimateDayCost(day).usd;
+}
+
+function chartCost(day) {
+  if (Object.hasOwn(day, "recorded")) return Number(day.costUSD) || 0;
+  const estimated = Billing.estimateDayCost(day);
+  return currentView === "overview" ? estimated.usd : estimated.amount;
 }
 
 function totalsCost(totals, days) {
-  return Number(totals?.costUSD ?? totals?.totalCost ?? totals?.cost) || days.reduce((sum, day) => sum + dayCost(day), 0);
+  if (days.length) return Billing.estimatePeriodCost(days).amount;
+  return Number(totals?.costUSD ?? totals?.totalCost ?? totals?.cost) || 0;
+}
+
+function costCurrency(days, totals) {
+  if (days.length) return Billing.estimatePeriodCost(days).currency;
+  return totals?.costCurrency || "USD";
+}
+
+function billingCaption(days = []) {
+  const unpriced = days.reduce((sum, day) => sum + Billing.estimateDayCost(day).unmatchedTokens, 0);
+  if (unpriced) return `已核价部分估算；另有 ${formatCompact(unpriced)} Token 待核价`;
+  if (days.some((day) => dayModels(day).some((model) => model.billingProvider))) return "按服务商与完整模型路由估算，来源与核验日期见价表";
+  const timed = days.some((day) => day?.timedBilling || day?.costCurrency === "CNY");
+  if (timed) return `按 ${Billing.PRICE_AS_OF} 官方价卡、请求时间峰谷计价`;
+  return `按 ${Billing.PRICE_AS_OF} 官方 API 单价估算，不等同订阅额度`;
 }
 
 function totalsTokens(totals, days) {
@@ -349,10 +386,10 @@ function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
 }
 
-function formatCost(value) {
-  return new Intl.NumberFormat("en-US", {
+function formatCost(value, currency = "USD") {
+  return new Intl.NumberFormat(currency === "CNY" ? "zh-CN" : "en-US", {
     style: "currency",
-    currency: "USD",
+    currency: currency === "CNY" ? "CNY" : "USD",
     maximumFractionDigits: 2,
   }).format(Number(value) || 0);
 }
@@ -364,8 +401,7 @@ function formatPercent(value) {
 const FORECAST_AGENT_META = {};
 
 function localDateKey(date = new Date()) {
-  const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
 function dayKey(day) {
@@ -393,9 +429,9 @@ function dayDistance(from, to) {
 
 function formatDateKey(value) {
   if (!value) return "--";
-  const date = new Date(`${value}T12:00:00`);
+  const date = new Date(`${value}T12:00:00+08:00`);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+  return date.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "short", day: "numeric" });
 }
 
 function formatRunway(days) {
@@ -837,7 +873,7 @@ function formatAccountTime(value) {
   if (!value) return "--";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function formatAccountWindow(windowDurationMins) {
@@ -1244,7 +1280,10 @@ function renderMetric(label, value, sub) {
 }
 
 function sumRecent(days, read, count = 30) {
-  return days.slice(-count).reduce((sum, day) => sum + read(day), 0);
+  const end = localDateKey();
+  const start = addDays(end, 1 - count);
+  return days.filter((day) => dayKey(day) >= start && dayKey(day) <= end)
+    .reduce((sum, day) => sum + read(day), 0);
 }
 
 function activeAgentCount(days) {
@@ -1262,14 +1301,15 @@ function renderMetrics(days, totals, view, bundle = {}) {
     renderMetric("最新日期", "--", "暂无 JSON 快照");
     renderMetric("累计 Token", "--", `运行一次 ${config.label} 导出后显示`);
     renderMetric("缓存读取占比", "--", "基于 ccusage daily");
-    renderMetric("费用估算", "--", "第三方本地估算");
+    renderMetric("费用估算", "--", billingCaption(days));
     return;
   }
 
   const latest = days.at(-1);
   const latestTotal = Number(latest.totalTokens) || 0;
   const totalTokenCount = totalsTokens(totals, days);
-  const totalCost = totalsCost(totals, days);
+  const totalCost = view === "overview" ? Billing.estimateDaysCost(days) : totalsCost(totals, days);
+  const currency = costCurrency(days, totals);
   const totalParts = tokenParts(totals?.totalTokens ? totals : days.reduce(
     (sum, day) => {
       const parts = tokenParts(day);
@@ -1289,18 +1329,20 @@ function renderMetrics(days, totals, view, bundle = {}) {
     const recentTotal = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
     const sourceCount = Object.values(bundle).filter((snapshot) => snapshot?.latestFile).length;
 
-    renderMetric("今日总用量", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(dayCost(latest))}`);
-    renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 条记录 ${formatCompact(recentTotal)}`);
-    renderMetric("近 30 日费用", formatCost(recentCost), `累计估算 ${formatCost(totalCost)}`);
+    const today = days.find((day) => dayKey(day) === localDateKey());
+    renderMetric("今日总用量", formatCompact(Number(today?.totalTokens) || 0), `${localDateKey()} · ${formatCost(today ? dayCost(today) : 0)}`);
+    renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 天 ${formatCompact(recentTotal)}`);
+    renderMetric("近 30 日费用", formatCost(recentCost), `累计 ${formatCost(totalCost)} · ${billingCaption(days)}`);
     renderMetric("活跃来源", `${sourceCount || activeAgentCount(days)} 个`, visibleProviders().map((entry) => entry.shortLabel || entry.label).join(" / "));
     return;
   }
 
   const recentTotal = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
-  renderMetric("最新日期", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(dayCost(latest))}`);
-  renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 条记录 ${formatCompact(recentTotal)}`);
+  const latestCost = Billing.estimateDayCost(latest);
+  renderMetric("最新日期", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(latestCost.amount, latestCost.currency)}`);
+  renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 天 ${formatCompact(recentTotal)}`);
   renderMetric("缓存读取占比", formatPercent(cacheShare), `${formatCompact(totalParts.cachedInput)} cache read`);
-  renderMetric("费用估算", formatCost(totalCost), "本地 JSONL 统计，不等同订阅额度");
+  renderMetric("费用估算", formatCost(totalCost, currency), billingCaption(days));
 }
 
 const trendRange = document.querySelector("#trendRange");
@@ -1434,7 +1476,7 @@ function renderTrend(days, label) {
 
   const recent = selection.rows;
   const maxTokens = Math.max(...recent.map((day) => Number(day.totalTokens) || 0), 1);
-  const maxCost = Math.max(...recent.map(dayCost), 1);
+  const maxCost = Math.max(...recent.map(chartCost), 1);
   const width = 900;
   const height = 300;
   const left = 42;
@@ -1477,7 +1519,7 @@ function renderTrend(days, label) {
 
   recent.forEach((day, index) => {
     const x = left + index * step;
-    const costHeight = (dayCost(day) / maxCost) * (chartHeight * 0.42);
+    const costHeight = (chartCost(day) / maxCost) * (chartHeight * 0.42);
     const bar = document.createElementNS(svg.namespaceURI, "rect");
     bar.setAttribute("class", "cost-bar");
     const barWidth = Math.max(0.5, Math.min(14, step * 0.6));
@@ -1528,13 +1570,15 @@ function renderTrend(days, label) {
     svg.appendChild(dot);
 
     const title = document.createElementNS(svg.namespaceURI, "title");
-    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens, ${formatCost(dayCost(point.day))}`;
+    const estimated = { amount: Number(point.day.costUSD) || 0, currency: "USD" };
+    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens, ${formatCost(estimated.amount, estimated.currency)}`;
     dot.appendChild(title);
   });
 
   els.rangePill.textContent = `${dayDate(recent[0])} - ${dayDate(recent.at(-1))}`;
   els.trendChart.appendChild(svg);
 }
+
 
 function renderBreakdown(days) {
   els.breakdown.replaceChildren();
@@ -1593,27 +1637,7 @@ function renderBreakdown(days) {
 }
 
 function collectModels(days) {
-  const totals = new Map();
-  days.forEach((day) => {
-    if (day.models && typeof day.models === "object") {
-      Object.entries(day.models).forEach(([name, model]) => {
-        totals.set(name, (totals.get(name) || 0) + (Number(model.totalTokens) || 0));
-      });
-    }
-
-    if (Array.isArray(day.modelBreakdowns)) {
-      day.modelBreakdowns.forEach((model) => {
-        const name = model.modelName || model.name || "unknown";
-        const parts = tokenParts(model);
-        const total = Number(model.totalTokens) || parts.displayTotal;
-        totals.set(name, (totals.get(name) || 0) + total);
-      });
-    }
-  });
-
-  return [...totals.entries()]
-    .map(([name, total]) => ({ name, total }))
-    .sort((a, b) => b.total - a.total);
+  return Billing.collectModelCosts(days);
 }
 
 function modelNames(day) {
@@ -1627,6 +1651,9 @@ function modelNames(day) {
 
 function renderModels(days) {
   els.modelList.replaceChildren();
+  if (els.billingAsOfPill) {
+    els.billingAsOfPill.textContent = days.length ? `${Billing.PRICE_AS_OF} API 单价` : "--";
+  }
   const models = collectModels(days);
 
   if (!models.length) {
@@ -1638,16 +1665,78 @@ function renderModels(days) {
   models.forEach((model) => {
     const row = document.createElement("div");
     row.className = "model-row";
+    const rateText = model.matched
+      ? `${escapeHtml(model.rate.label)} · ${escapeHtml(Billing.formatRateLabel(model.rate))}`
+      : model.usd > 0 ? "OpenCode 记录费用；单价待核验" : "该服务商路由待核价";
     row.innerHTML = `
       <div class="model-main">
         <div class="model-name">${escapeHtml(model.name)}</div>
+        <div class="model-rate">${rateText}</div>
         <div class="model-track">
           <div class="model-fill" style="width:${(model.total / max) * 100}%"></div>
         </div>
       </div>
-      <div class="model-value">${formatCompact(model.total)}</div>
+      <div class="model-value">
+        ${formatCompact(model.total)}
+        <span class="model-cost">${model.matched || model.usd > 0 ? formatCost(model.amount || model.usd, model.currency || "USD") : "待核价"}</span>
+      </div>
     `;
     els.modelList.appendChild(row);
+  });
+}
+
+function renderBillingRates(view, days) {
+  if (!els.billingRows) return;
+  const rates = Billing.ratesForProvider(view);
+  const routes = Billing.routesForProvider(view);
+  const used = Billing.usedRateIds(days);
+  els.billingRatePill.textContent = `${Billing.PRICE_AS_OF} · ${rates.length} 个型号 · ${routes.length} 条路由`;
+  els.billingTitle.textContent = view === "overview" ? "API 参考单价" : `${(VIEW_CONFIGS[view] || {}).label || "模型"} API 参考单价`;
+  const hasCny = rates.some((rate) => rate.currency === "CNY");
+  els.billingNote.textContent = used.size
+    ? `单价为每百万 token。币种按各型号标注，人民币与美元汇总时按固定汇率换算。当前账本用到 ${used.size} 个型号，已在表中标出。`
+    : hasCny
+      ? "Kimi 与 DeepSeek 保留官方人民币价；其余为美元。当前页还没有对上账本里的型号。"
+      : "单价为每百万 token 的美元价，用来估算本地 Token 成本。当前页还没有对上账本里的型号。";
+
+  els.billingRows.replaceChildren();
+  if (view === "opencode") {
+    els.billingNote.textContent = "按完整模型路由匹配；GLM-5.3-Flash 使用智谱官方 API 直连人民币标准价估算，2026-09-23 核验，不含限时折扣。实际调用仍走方舟；未核价版本保留 Token 记录并标注待核价。";
+    els.billingRatePill.textContent = "路由价格核验：2026-09-23";
+  }
+  rates.forEach((rate) => {
+    const row = document.createElement("tr");
+    if (used.has(rate.id)) row.className = "is-used";
+    const currency = rate.currency || "USD";
+    row.innerHTML = `
+      <td>${escapeHtml(rate.label)}</td>
+      <td>${escapeHtml(Billing.vendorLabel(rate.vendor))}</td>
+      <td><code>${escapeHtml((rate.routes || [rate.id]).join(" / "))}</code></td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.input, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.cacheRead, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.cacheWrite, currency))}</td>
+      <td>${escapeHtml(Billing.formatListedRate(rate.output, currency))}</td>
+      <td>${escapeHtml(rate.note || "标准价")}</td>
+    `;
+    els.billingRows.appendChild(row);
+  });
+  routes.forEach((route) => {
+    const row = document.createElement("tr");
+    row.className = "is-route-rule";
+    const effective = route.effectiveAt
+      ? ` · ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Shanghai" }).format(new Date(route.effectiveAt))} 起`
+      : "";
+    row.innerHTML = `
+      <td>动态路由</td>
+      <td>${escapeHtml((VIEW_CONFIGS[route.provider] || {}).label || route.provider)}</td>
+      <td><code>${escapeHtml(route.route)} → ${escapeHtml(route.destinations.join(" / "))}</code></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>${escapeHtml(`${route.note}${effective}`)}</td>
+    `;
+    els.billingRows.appendChild(row);
   });
 }
 
@@ -1667,7 +1756,7 @@ function renderSnapshots(data) {
     row.innerHTML = `
       <div class="snapshot-main">
         <div class="snapshot-name">${index === 0 ? "Latest · " : ""}${escapeHtml(file.name)}</div>
-        <div class="snapshot-date">${new Date(file.modifiedAt).toLocaleString("zh-CN")}</div>
+        <div class="snapshot-date">${new Date(file.modifiedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</div>
       </div>
       <div class="snapshot-meta">${formatBytes(file.size)}</div>
     `;
@@ -1691,6 +1780,7 @@ function renderTable(days) {
     .forEach((day) => {
       const parts = tokenParts(day);
       const models = modelNames(day).join(", ") || "--";
+      const estimated = Billing.estimateDayCost(day);
       const row = document.createElement("tr");
       row.innerHTML = `
         <td>${escapeHtml(dayDate(day))}</td>
@@ -1700,7 +1790,7 @@ function renderTable(days) {
         <td>${formatNumber(parts.cacheCreationInput)}</td>
         <td>${formatNumber(day.outputTokens)}</td>
         <td>${formatNumber(day.reasoningOutputTokens)}</td>
-        <td>${formatCost(dayCost(day))}</td>
+        <td>${formatCost(estimated.amount, estimated.currency)}</td>
         <td>${escapeHtml(models)}</td>
       `;
       els.dailyRows.appendChild(row);
@@ -1711,9 +1801,9 @@ function sourceSummary(snapshot) {
   const days = sortDays(snapshot?.daily || []);
   const latest = days.at(-1);
   const total = totalsTokens(snapshot?.totals || {}, days);
-  const cost = totalsCost(snapshot?.totals || {}, days);
+  const period = Billing.estimatePeriodCost(days);
   const recent = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
-  return { days, latest, total, cost, recent };
+  return { days, latest, total, cost: period.amount, currency: period.currency, recent };
 }
 
 function dayModels(day) {
@@ -1750,6 +1840,8 @@ function mergeUsageSnapshots(bundle) {
       for (const model of dayModels(sourceDay)) {
         day.modelBreakdowns.push({
           ...model,
+          timedBilling: model.timedBilling || sourceDay.timedBilling || sourceDay.costCurrency === "CNY",
+          costCurrency: model.costCurrency || sourceDay.costCurrency,
           modelName: `${provider.shortLabel || provider.label} · ${model.modelName || model.name || "unknown"}`,
         });
       }
@@ -1790,8 +1882,8 @@ function renderOverviewSources(bundle) {
         <p>${summary.latest ? `${dayDate(summary.latest)} 最新 ${formatCompact(summary.latest.totalTokens)}` : "还没有本地快照"}</p>
       </div>
       <div class="source-card-meta">
-        <span>${formatCost(summary.cost)}</span>
-        <span>近 30 条 ${formatCompact(summary.recent)}</span>
+        <span>${formatCost(summary.cost, summary.currency)}</span>
+        <span>近 30 日 ${formatCompact(summary.recent)}</span>
       </div>
     `;
     els.sourceCompare.appendChild(node);
@@ -1838,6 +1930,7 @@ function renderUsage(data, view, bundle = {}) {
   renderTrend(days, config.label);
   renderBreakdown(days);
   renderModels(days);
+  renderBillingRates(view, days);
   renderSnapshots(data);
   renderTable(days);
 
@@ -1859,6 +1952,7 @@ function setViewVisibility(view) {
   els.sourceCompare.classList.toggle("is-hidden", !(view === "overview" || isSources));
   els.detailGrid.classList.toggle("is-hidden", !isUsageView);
   els.lowerGrid.classList.toggle("is-hidden", !isUsageView);
+  els.billingPanel.classList.toggle("is-hidden", !isUsageView);
   els.tablePanel.classList.toggle("is-hidden", !isUsageView);
   els.resetCredits.classList.toggle("is-hidden", !showReset);
 }
@@ -2169,7 +2263,7 @@ async function loadView(view = currentView) {
     setStatus(`正在读取 ${config.label} JSON...`);
 
     if (currentView === "overview") {
-      const entries = await Promise.all(visibleProviders().map(async (provider) => [provider.id, await fetchUsage(provider.id)]));
+      const entries = await Promise.all(overviewProviders().map(async (provider) => [provider.id, await fetchUsage(provider.id)]));
       const bundle = Object.fromEntries(entries);
       const overview = mergeUsageSnapshots(bundle);
       renderUsage(overview, "overview", bundle);

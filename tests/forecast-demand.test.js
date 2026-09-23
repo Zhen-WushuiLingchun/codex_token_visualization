@@ -121,15 +121,15 @@ test("unknown equivalent-token deltas do not silently fall back to raw tokens", 
   assert.equal(result.demand.ready, false);
 });
 
-test("local calendar exposure respects daylight-saving boundaries", () => {
+test("Beijing calendar exposure is independent of host daylight saving", () => {
   const priorZone = process.env.TZ;
   try {
     process.env.TZ = "America/New_York";
-    const now = new Date(2026, 10, 2).getTime();
+    const now = Date.parse("2026-11-02T00:00:00+08:00");
     const result = estimate({ days: [{ date: "2026-10-31", totalTokens: 24e6 },
-      { date: "2026-11-01", totalTokens: 25e6 }], now });
+      { date: "2026-11-01", totalTokens: 24e6 }], now });
     near(result.weightedRate, 24e6);
-    assert.equal(result.demand.availableHours[1], 49);
+    assert.equal(result.demand.availableHours[1], 48);
   } finally { process.env.TZ = priorZone; }
 });
 
