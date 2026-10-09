@@ -13,6 +13,7 @@ const { checkForUpdate } = require("./lib/update-check.js");
 const { useSystemCertificates, networkErrorMessage } = require("./lib/network.js");
 const { summarizeRefreshResults } = require("./lib/refresh-results.js");
 const { enrichCodexUsage } = require("./lib/codex-auto-review.js");
+const { normalizePlan: normalizeCapacityPlan } = require("./web/plan-capacity.js");
 useSystemCertificates();
 
 const ROOT = __dirname;
@@ -71,6 +72,7 @@ function defaultForecastAgent(agent) {
     cycleDays: 7,
     fallbackUsedTokens: null,
     fallbackDailyTokens: null,
+    capacityPlan: normalizeCapacityPlan(),
   };
 }
 
@@ -87,6 +89,7 @@ function normalizeForecastAgent(value, agent) {
     cycleDays: Math.min(90, Math.max(1, Math.round(asNonNegativeNumber(value?.cycleDays, 7)))),
     fallbackUsedTokens: asNonNegativeNumber(value?.fallbackUsedTokens),
     fallbackDailyTokens: asNonNegativeNumber(value?.fallbackDailyTokens),
+    capacityPlan: normalizeCapacityPlan(value?.capacityPlan),
   };
 }
 
@@ -115,14 +118,19 @@ function readForecastSettings() {
 }
 
 function writeForecastSettings(payload) {
+  const previous = readForecastSettings();
   const settings = {
     version: 1,
     agents: Object.fromEntries(
-      FORECAST_AGENTS.map((agent) => [agent, normalizeForecastAgent(payload?.agents?.[agent], agent)])
+      FORECAST_AGENTS.map((agent) => [agent, normalizeForecastAgent({
+        ...previous.agents[agent], ...payload?.agents?.[agent],
+      }, agent)])
     ),
   };
   fs.mkdirSync(path.dirname(FORECAST_SETTINGS_PATH), { recursive: true });
-  fs.writeFileSync(FORECAST_SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  const temporaryPath = `${FORECAST_SETTINGS_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  fs.renameSync(temporaryPath, FORECAST_SETTINGS_PATH);
   return settings;
 }
 

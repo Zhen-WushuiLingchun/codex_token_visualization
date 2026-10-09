@@ -55,6 +55,17 @@ const els = {
   displaySettingsCancel: document.querySelector("#displaySettingsCancel"),
   displaySettingsSave: document.querySelector("#displaySettingsSave"),
   forecastViewTab: document.querySelector('.view-tab[data-view="forecast"]'),
+  capacitySettingsBtn: document.querySelector("#capacitySettingsBtn"),
+  capacitySettingsDialog: document.querySelector("#capacitySettingsDialog"),
+  capacitySettingsForm: document.querySelector("#capacitySettingsForm"),
+  capacitySettingsTitle: document.querySelector("#capacitySettingsTitle"),
+  capacityBaseline: document.querySelector("#capacityBaseline"),
+  capacityChanges: document.querySelector("#capacityChanges"),
+  capacityAdd: document.querySelector("#capacityAdd"),
+  capacitySettingsClose: document.querySelector("#capacitySettingsClose"),
+  capacitySettingsCancel: document.querySelector("#capacitySettingsCancel"),
+  capacitySettingsSave: document.querySelector("#capacitySettingsSave"),
+  capacitySettingsError: document.querySelector("#capacitySettingsError"),
 };
 
 const VIEW_CONFIGS = {
@@ -94,6 +105,8 @@ let disabledSyncProviderIds = new Set();
 let forecastAgent = null;
 let forecastSnapshots = {};
 let forecastQuotas = {};
+let forecastSettings = { agents: {} };
+let capacitySettingsAgent = null;
 let resetPlannerGeneration = 0;
 let resetPlannerWorker;
 let resetPlannerRequest = 0;
@@ -171,6 +184,86 @@ async function loadProviderCatalog() {
   const [providerPayload, settingsPayload] = await Promise.all([providerResponse.json(), settingsResponse.json()]);
   disabledSyncProviderIds = new Set(settingsPayload.settings?.disabledSyncProviders || []);
   configureProviders(providerPayload.providers, settingsPayload.settings?.visibleProviders);
+  await loadForecastSettings();
+}
+
+async function loadForecastSettings() {
+  const response = await fetch("/api/forecast-settings", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Forecast settings HTTP ${response.status}`);
+  forecastSettings = payload.settings || { agents: {} };
+}
+
+function localDateTimeInput(value) {
+  const date = new Date(value);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function addCapacityChange(entry = {}) {
+  const row = document.createElement("div");
+  row.className = "capacity-change-row";
+  const index = els.capacityChanges.childElementCount + 1;
+  row.innerHTML = `
+    <label class="capacity-field">生效时间（本地）<input type="datetime-local" step="1" data-capacity="time" required aria-label="生效时间 ${index}" /></label>
+    <label class="capacity-field">新容量倍数<input type="number" min="0.01" max="1000" step="any" data-capacity="multiplier" required aria-label="新容量倍数 ${index}" /></label>
+    <button class="settings-close" type="button" title="删除这条变更" aria-label="删除容量变更 ${index}">×</button>`;
+  row.querySelector('[data-capacity="time"]').value = localDateTimeInput(entry.effectiveAt || Date.now());
+  row.querySelector('[data-capacity="multiplier"]').value = entry.multiplier ?? els.capacityBaseline.value;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  els.capacityChanges.appendChild(row);
+}
+
+async function openCapacitySettings() {
+  if (!forecastAgent) return;
+  const agent = forecastAgent;
+  els.capacitySettingsBtn.disabled = true;
+  try {
+    await loadForecastSettings();
+    capacitySettingsAgent = agent;
+    const plan = globalThis.PlanCapacity.normalizePlan(forecastPlan(agent).capacityPlan);
+    els.capacitySettingsTitle.textContent = `${providerMeta[agent]?.label || agent} · 套餐容量`;
+    els.capacityBaseline.value = plan.baselineMultiplier;
+    els.capacityChanges.replaceChildren();
+    plan.changes.forEach(addCapacityChange);
+    els.capacitySettingsError.hidden = true;
+    els.capacitySettingsSave.disabled = false;
+    els.capacitySettingsDialog.showModal();
+  } catch (error) {
+    setStatus(`读取套餐容量失败：${error.message}`, "error");
+  } finally {
+    els.capacitySettingsBtn.disabled = false;
+  }
+}
+
+async function saveCapacitySettings(event) {
+  event.preventDefault();
+  els.capacitySettingsSave.disabled = true;
+  els.capacitySettingsError.hidden = true;
+  try {
+    const capacityPlan = globalThis.PlanCapacity.normalizePlan({
+      baselineMultiplier: els.capacityBaseline.value,
+      changes: [...els.capacityChanges.children].map((row) => ({
+        effectiveAt: new Date(row.querySelector('[data-capacity="time"]').value).toISOString(),
+        multiplier: row.querySelector('[data-capacity="multiplier"]').value,
+      })),
+    });
+    const response = await fetch("/api/forecast-settings", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: { [capacitySettingsAgent]: { capacityPlan } } }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    forecastSettings = payload.settings;
+    els.capacitySettingsDialog.close();
+    renderForecast(forecastAgent);
+    setStatus("套餐容量已保存，预测已重新计算", "ok");
+  } catch (error) {
+    els.capacitySettingsError.textContent = error.message;
+    els.capacitySettingsError.hidden = false;
+  } finally {
+    els.capacitySettingsSave.disabled = false;
+  }
 }
 
 function selectedProviderIds() {
@@ -427,11 +520,13 @@ function defaultForecastPlan(agent = forecastAgent) {
     cycleDays: 7,
     fallbackUsedTokens: null,
     fallbackDailyTokens: null,
+    capacityPlan: globalThis.PlanCapacity.normalizePlan(),
   };
 }
 
 function forecastPlan(agent = forecastAgent) {
-  return defaultForecastPlan(agent);
+  return { ...defaultForecastPlan(agent),
+    capacityPlan: globalThis.PlanCapacity.normalizePlan(forecastSettings.agents?.[agent]?.capacityPlan) };
 }
 
 function inputNumberOrNull(value) {
@@ -581,10 +676,12 @@ function quotaObservationsShareSegment(previous, current) {
 function compatibleQuotaObservations(quotaData) {
   const points = Array.isArray(quotaData?.observations) ? quotaData.observations : [];
   const basis = forecastSnapshots[quotaData?.source]?.autoReview?.quotaBasis;
-  return globalThis.ForecastModel.quotaObservationsForBasis(points, basis);
+  return globalThis.PlanCapacity.observationEras(globalThis.ForecastModel.quotaObservationsForBasis(points, basis),
+    forecastPlan(quotaData?.source).capacityPlan);
 }
 
 function quotaObservationSegments(quotaData, activeWindowName = null) {
+  const capacityPlan = globalThis.PlanCapacity.normalizePlan(forecastPlan(quotaData?.source).capacityPlan);
   const resolvedWindowName = activeWindowName || longestQuotaWindow(quotaData?.latest)?.name || null;
   const observations = [...compatibleQuotaObservations(quotaData)]
     .filter((observation) =>
@@ -595,7 +692,8 @@ function quotaObservationSegments(quotaData, activeWindowName = null) {
   observations.forEach((observation) => {
     const currentSegment = segments.at(-1);
     const previous = currentSegment?.at(-1);
-    if (!currentSegment || !quotaObservationsShareSegment(previous, observation)) {
+    if (!currentSegment || !quotaObservationsShareSegment(previous, observation)
+      || globalThis.PlanCapacity.crossesChange(capacityPlan, previous.fetchedAt, observation.fetchedAt)) {
       segments.push([observation]);
     } else {
       currentSegment.push(observation);
@@ -606,7 +704,8 @@ function quotaObservationSegments(quotaData, activeWindowName = null) {
 
 function quotaHistoryIntervals(quotaData, windowName = null) {
   const segments = quotaObservationSegments(quotaData, windowName);
-  return globalThis.ForecastModel?.buildSegmentIntervals(segments) || [];
+  const intervals = globalThis.ForecastModel?.buildSegmentIntervals(segments) || [];
+  return globalThis.PlanCapacity.normalizeIntervals(intervals, forecastPlan(quotaData?.source).capacityPlan).intervals;
 }
 
 function quotaWindowPoints(quotaData, activeWindowName = null) {
@@ -619,11 +718,14 @@ function quotaWindowPoints(quotaData, activeWindowName = null) {
   if (!latestWindow?.resetsAt) return [];
   const windowName = activeWindowName || latestWindow.name;
   const resetAt = latestWindow.resetsAt;
+  const capacityPlan = globalThis.PlanCapacity.normalizePlan(forecastPlan(quotaData?.source).capacityPlan);
+  const capacityStart = capacityPlan.changes.filter((entry) => Date.parse(entry.effectiveAt) <= Date.now()).at(-1)?.effectiveAt;
   return quotaData.daily
     .map((snapshot) => ({ snapshot, day: quotaSnapshotDay(snapshot) }))
     .filter((item) => item.day && item.day <= localDateKey())
     .map((item) => ({ ...item, window: (item.snapshot.windows || []).find((window) => window.name === windowName) }))
     .filter((item) => item.window?.resetsAt === resetAt && Number.isFinite(Number(item.window.usedPercent)))
+    .filter((item) => !capacityStart || Date.parse(item.snapshot.fetchedAt) >= Date.parse(capacityStart))
     .sort((a, b) => a.day.localeCompare(b.day));
 }
 
@@ -658,6 +760,8 @@ function fitQuotaBurn(days, quotaData, account, dailyTokenRate, modelFit = null,
       contributingSegmentCount: segmented.segmentCount,
       historicalMode: true,
       observationMode: true,
+      capacityMultiplier: globalThis.PlanCapacity.multiplierAt(globalThis.PlanCapacity.normalizePlan(forecastPlan(quotaData.source).capacityPlan), Date.now()),
+      convertedIntervalCount: rawIntervals.filter((entry) => entry.sourceMultiplier !== entry.targetMultiplier).length,
       model: segmented.model,
     };
     if (!segmented.model) return base;
@@ -752,6 +856,12 @@ function buildForecast(agent, requestedWindowName = forecastWindowSelections[age
       );
   const calibration = globalThis.ForecastModel?.assessModelCalibration(historyIntervals, recentDays, modelFit)
     || { ready: false, reason: "model-calibrating" };
+  const capacityPlan = globalThis.PlanCapacity.normalizePlan(plan.capacityPlan);
+  if (capacityPlan.changes.length && (!quotaData?.latest?.fetchedAt || !Number.isFinite(Date.parse(quotaData.latest.fetchedAt))
+    || globalThis.PlanCapacity.crossesChange(capacityPlan, quotaData.latest.fetchedAt, Date.now()))) {
+    calibration.ready = false;
+    calibration.reason = "capacity-snapshot-stale";
+  }
   const resolvedModelFit = modelFit ? { ...modelFit,
     active: modelFit.active && calibration.ready,
     reason: calibration.ready ? modelFit.reason : calibration.reason,
@@ -952,11 +1062,15 @@ function renderAccountRunway(forecast) {
   if (account.type === "percent" && fit?.model) {
     const tokenBasis = forecast.modelFit?.active ? "模型等效 Token" : "原始 Token";
     const historyText = fit.historicalMode
-      ? `跨 ${fit.contributingSegmentCount} 个重置周期的 ${fit.intervalCount} 个有效区间（当前周期 ${fit.currentSegmentPoints} 个观测点）`
+      ? `跨 ${fit.contributingSegmentCount} 个分段的 ${fit.intervalCount} 个有效区间（当前分段 ${fit.currentSegmentPoints} 个观测点）`
       : `同一额度窗口内 ${fit.sampleCount} 个观测点`;
+    const capacityText = fit.convertedIntervalCount
+      ? `${fit.convertedIntervalCount} 个历史区间已按容量比换算至 ${fit.capacityMultiplier}x。` : "";
     const runwayText = forecast.exhaustionDays === 0 ? "当前额度已耗尽"
       : `预计 ${formatRunway(forecast.exhaustionDays)} 后耗尽`;
-    els.forecastAdvice.innerHTML = `<strong>跨周期拟合已启用。</strong><span>基于${historyText}，将${tokenBasis} 增量拟合为官方额度百分比；旧周期按 28 天半衰期降低权重。额度重置只开启新分段，不会清空历史样本。${escapeHtml(modelFitStatus(forecast.modelFit))}；${escapeHtml(runwayText)}。</span>`;
+    els.forecastAdvice.innerHTML = `<strong>跨周期拟合已启用。</strong><span>基于${historyText}，将${tokenBasis} 增量拟合为官方额度百分比；旧周期按 28 天半衰期降低权重。${escapeHtml(capacityText)}额度重置只开启新分段，不会清空历史样本。${escapeHtml(modelFitStatus(forecast.modelFit))}；${escapeHtml(runwayText)}。</span>`;
+  } else if (forecast.calibration?.reason === "capacity-snapshot-stale") {
+    els.forecastAdvice.innerHTML = "<strong>等待新容量下的账户余额。</strong><span>当前快照早于套餐变更，暂缓耗尽预测与重置规划。</span>";
   } else if (account.type === "percent" && !forecast.rate.demand.ready) {
     els.forecastAdvice.innerHTML = "<strong>受限期间需求尚不明确。</strong><span>可观测时段不足，暂缓耗尽时间与重置收益预测。官方余额仍正常展示；有工作待完成且额度已用尽时，可考虑最早到期的 reset。</span>";
   } else if (account.type === "percent" && !forecast.calibration?.ready) {
@@ -1079,11 +1193,11 @@ function renderForecast(agent = forecastAgent) {
         ? formatRunway(forecast.exhaustionDays)
         : `${fit?.intervalCount || 0} / ${fit?.requiredIntervals || 2}`,
       fit?.model
-        ? `R² ${fit.model.rSquared.toFixed(2)} · ${fit.intervalCount || fit.sampleCount} 个区间 / ${fit.contributingSegmentCount || 1} 个周期 · ${forecast.modelFit?.active ? "模型等效 Token" : "原始 Token"}`
-        : `${fit?.totalSegmentCount || 0} 个周期 · 当前 ${fit?.currentSegmentPoints || fit?.sampleCount || 0} 个观测点`
+        ? `R² ${fit.model.rSquared.toFixed(2)} · ${fit.intervalCount || fit.sampleCount} 个区间 / ${fit.contributingSegmentCount || 1} 个分段 · ${forecast.modelFit?.active ? "模型等效 Token" : "原始 Token"}`
+        : `${fit?.totalSegmentCount || 0} 个分段 · 当前 ${fit?.currentSegmentPoints || fit?.sampleCount || 0} 个观测点`
     );
     els.forecastSourcePill.textContent = forecast.quotaData?.latest
-      ? `账户快照 · ${forecast.quotaData.latest.file?.name || "最新"}${fit?.historicalMode ? ` · 跨周期${fit.model ? "拟合" : "采样"}` : ""}${forecast.modelFit?.active ? " · 模型校正" : ""}`
+      ? `账户快照 · ${forecast.quotaData.latest.file?.name || "最新"}${fit?.historicalMode ? ` · 跨周期${fit.model ? "拟合" : "采样"}` : ""}${forecast.modelFit?.active ? " · 模型校正" : ""}${forecast.plan.capacityPlan?.changes?.length ? ` · ${globalThis.PlanCapacity.multiplierAt(forecast.plan.capacityPlan, Date.now())}x 容量` : ""}`
       : "未发现账户快照";
     renderForecastRunway(forecast);
     renderForecastRates(forecast);
@@ -1972,6 +2086,7 @@ async function loadSourcesView() {
 
 async function loadForecastView() {
   setStatus("正在读取用量与账户额度...");
+  await loadForecastSettings();
   const forecastProviders = visibleProviders().filter((entry) => entry.forecast !== false);
   const results = await Promise.all(forecastProviders.map(async (provider) => {
     const [usage, quota] = await Promise.all([fetchUsage(provider.id), fetchQuota(provider.id)]);
@@ -2152,6 +2267,8 @@ async function fetchResetInventory(source) {
 
 async function loadResetPlannerView() {
   const generation = resetPlannerGeneration;
+  await loadForecastSettings();
+  if (generation !== resetPlannerGeneration || currentView !== "resets") return;
   const providers = visibleProviders().filter((provider) => provider.resetCredits);
   els.resetPlannerProviders.replaceChildren(emptyState("正在分析重置库存与历史消耗..."));
   els.sourcePath.textContent = "本地用量 + 账户额度 + banked reset";
@@ -2387,6 +2504,11 @@ els.displaySettingsAll.addEventListener("click", () => {
 });
 els.providerSettingsList.addEventListener("change", updateDisplaySettingsCount);
 els.displaySettingsSave.addEventListener("click", saveDisplaySettings);
+els.capacitySettingsBtn.addEventListener("click", openCapacitySettings);
+els.capacityAdd.addEventListener("click", () => addCapacityChange());
+els.capacitySettingsForm.addEventListener("submit", saveCapacitySettings);
+els.capacitySettingsClose.addEventListener("click", () => els.capacitySettingsDialog.close());
+els.capacitySettingsCancel.addEventListener("click", () => els.capacitySettingsDialog.close());
 
 async function bootstrap() {
   loadUpdateStatus();

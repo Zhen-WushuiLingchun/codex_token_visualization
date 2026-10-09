@@ -64,7 +64,10 @@
           <div class="forecast-heading">
             <div>
               <p class="section-label">Runway planner</p>
-              <h2>额度预测</h2>
+              <div class="forecast-title-row">
+                <h2>额度预测</h2>
+                <button class="display-settings-button" id="capacitySettingsBtn" type="button" title="套餐容量变更" aria-label="套餐容量变更">⚙</button>
+              </div>
             </div>
             <div class="forecast-agent-tabs" id="forecastAgentTabs" role="tablist" aria-label="额度来源"></div>
           </div>
@@ -256,6 +259,34 @@
       </form>
     </dialog>
 
+    <dialog class="settings-dialog" id="capacitySettingsDialog" aria-labelledby="capacitySettingsTitle">
+      <form class="settings-sheet" id="capacitySettingsForm">
+        <div class="settings-heading">
+          <div>
+            <p class="section-label">Plan capacity</p>
+            <h2 id="capacitySettingsTitle">套餐容量</h2>
+          </div>
+          <button class="settings-close" id="capacitySettingsClose" type="button" title="关闭" aria-label="关闭套餐容量设置">×</button>
+        </div>
+        <div class="capacity-settings-body">
+          <label class="capacity-field">原始容量倍数
+            <input id="capacityBaseline" type="number" min="0.01" max="1000" step="any" required aria-label="原始容量倍数" />
+          </label>
+          <div class="capacity-list-heading"><strong>容量变更记录</strong>
+            <button class="settings-close" id="capacityAdd" type="button" title="添加容量变更" aria-label="添加容量变更">+</button>
+          </div>
+          <div id="capacityChanges" class="capacity-change-list"></div>
+          <p id="capacitySettingsError" class="capacity-error" role="alert" hidden></p>
+        </div>
+        <div class="settings-actions">
+          <span class="settings-action-spacer"></span>
+          <button class="secondary-button" id="capacitySettingsCancel" type="button">取消</button>
+          <button class="primary-button" id="capacitySettingsSave" type="submit">保存变更</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/plan-capacity.js"></script>
     <script src="/forecast-model.js"></script>
     <script src="/forecast-demand.js"></script>
     <script src="/reset-optimizer.js"></script>

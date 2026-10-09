@@ -34,8 +34,10 @@ test("paused sources skip manual, global, quota, reset and scheduled collectors 
       child.stdout.on("data", data => { if (data.toString().includes("AI token dashboard")) resolve(); });
       child.on("exit", code => reject(new Error(`test server exited ${code}`)));
     });
-    const request = async (url, method = "GET") => {
-      const response = await fetch(`http://127.0.0.1:${port}${url}`, { method });
+    const request = async (url, method = "GET", body) => {
+      const response = await fetch(`http://127.0.0.1:${port}${url}`, { method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined });
       assert.equal(response.status, 200);
       return response.json();
     };
@@ -58,6 +60,22 @@ test("paused sources skip manual, global, quota, reset and scheduled collectors 
     assert.equal(usage.autoReview.confirmedTokens, 42);
     assert.equal(usage.autoReview.quotaExempt, false);
     assert.ok((await request("/api/forecast-settings")).settings.agents);
+    assert.deepEqual((await request("/api/forecast-settings")).settings.agents.codex.capacityPlan,
+      { baselineMultiplier: 1, changes: [] });
+    const claudePlan = { baselineMultiplier: 5, changes: [] };
+    await request("/api/forecast-settings", "PUT", { agents: { claude: { capacityPlan: claudePlan, cycleDays: 14 } } });
+    const capacityPlan = { baselineMultiplier: 5,
+      changes: [{ effectiveAt: "2026-10-04T00:00:00+08:00", multiplier: 10 }] };
+    const configured = (await request("/api/forecast-settings", "PUT", { agents: { codex: { capacityPlan } } })).settings;
+    assert.equal(configured.agents.codex.capacityPlan.changes[0].effectiveAt, "2026-10-03T16:00:00.000Z");
+    assert.deepEqual(configured.agents.claude.capacityPlan, claudePlan);
+    assert.equal(configured.agents.claude.cycleDays, 14);
+    const bad = await fetch(`http://127.0.0.1:${port}/api/forecast-settings`, { method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agents: { codex: { capacityPlan: { baselineMultiplier: 0 } } } }) });
+    assert.equal(bad.status, 400);
+    assert.deepEqual((await request("/api/forecast-settings")).settings, configured);
+    assert.deepEqual(JSON.parse(fs.readFileSync(env.FORECAST_SETTINGS_PATH, "utf8")), configured);
     const config = spawnSync(process.execPath, ["scripts/provider-config.mjs", "--ccusage-sources"], { env, encoding: "utf8", windowsHide: true });
     assert.equal(config.status, 0);
     assert.deepEqual(JSON.parse(config.stdout), []);
