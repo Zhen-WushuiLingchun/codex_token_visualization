@@ -8,6 +8,7 @@ const {
   normalizeDisplaySettings,
   readDisplaySettings,
   writeDisplaySettings,
+  sourceSyncEnabled,
 } = require("../lib/display-settings.js");
 
 const providers = [
@@ -19,9 +20,10 @@ const providers = [
 
 test("display settings default to every navigable provider", () => {
   assert.deepEqual(defaultDisplaySettings(providers), {
-    version: 1,
+    version: 2,
     visibleProviders: ["codex", "claude", "opencode"],
     hiddenProviders: [],
+    disabledSyncProviders: [],
   });
 });
 
@@ -52,10 +54,39 @@ test("display settings persist without exposing non-provider values", () => {
   try {
     writeDisplaySettings(filePath, { visibleProviders: ["opencode", "bad-id"] }, providers);
     assert.deepEqual(readDisplaySettings(filePath, providers), {
-      version: 1,
+      version: 2,
       visibleProviders: ["opencode"],
       hiddenProviders: ["codex", "claude"],
+      disabledSyncProviders: [],
     });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("sync pauses are independent of visibility and reject malformed ids", () => {
+  const settings = normalizeDisplaySettings({ visibleProviders: ["codex"], disabledSyncProviders: ["codex", "unknown", "all", "codex"] }, providers);
+  assert.deepEqual(settings.visibleProviders, ["codex"]);
+  assert.deepEqual(settings.disabledSyncProviders, ["codex"]);
+  assert.deepEqual(normalizeDisplaySettings({ disabledSyncProviders: "codex" }, providers).disabledSyncProviders, []);
+});
+
+test("partial settings updates preserve sync pauses and all paused sources skip the legacy aggregate", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "token-ledger-sync-"));
+  const file = path.join(directory, "display-settings.json");
+  try {
+    writeDisplaySettings(file, { visibleProviders: ["codex"], disabledSyncProviders: ["claude"] }, providers);
+    writeDisplaySettings(file, { visibleProviders: ["opencode"] }, providers);
+    assert.deepEqual(readDisplaySettings(file, providers).disabledSyncProviders, ["claude"]);
+    assert.equal(sourceSyncEnabled(file, providers, "codex"), true);
+    assert.equal(sourceSyncEnabled(file, providers, "claude"), false);
+    assert.equal(sourceSyncEnabled(file, providers, "all"), false);
+    assert.equal(sourceSyncEnabled(file, providers, "unknown"), false);
+    writeDisplaySettings(file, { disabledSyncProviders: ["codex", "claude", "opencode"] }, providers);
+    assert.deepEqual(readDisplaySettings(file, providers).visibleProviders, ["opencode"]);
+    assert.equal(sourceSyncEnabled(file, providers, "opencode"), false);
+    writeDisplaySettings(file, { disabledSyncProviders: [] }, providers);
+    assert.equal(sourceSyncEnabled(file, providers, "all"), true);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

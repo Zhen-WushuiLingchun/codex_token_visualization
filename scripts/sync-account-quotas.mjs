@@ -9,11 +9,15 @@ import { zstdDecompressSync } from "node:zlib";
 import providerRegistry from "../providers/registry.js";
 import { writeConsolidatedUsageSnapshot } from "./usage-storage.mjs";
 import network from "../lib/network.js";
+import displaySettings from "../lib/display-settings.js";
+import codexAutoReview from "../lib/codex-auto-review.js";
+import forecastModel from "../web/forecast-model.js";
 network.useSystemCertificates();
 
 const ROOT = resolve(import.meta.dirname, "..");
 const USAGE_ROOT = process.env.USAGE_LOG_ROOT || join(ROOT, "usage-logs");
 const SETTINGS_PATH = process.env.FORECAST_SETTINGS_PATH || join(USAGE_ROOT, "forecast-settings.json");
+const DISPLAY_SETTINGS_PATH = process.env.DISPLAY_SETTINGS_PATH || join(USAGE_ROOT, "display-settings.json");
 const QUOTA_ROOT = process.env.QUOTA_SNAPSHOT_DIR || join(USAGE_ROOT, "quota-snapshots");
 const OBSERVATION_ROOT = process.env.QUOTA_OBSERVATION_DIR || join(USAGE_ROOT, "quota-observations");
 const PROVIDERS = providerRegistry.PROVIDERS;
@@ -368,24 +372,33 @@ export function decodeDeepSeekHarnessSessionBuffer(buffer, { compressed = true }
 
 function deepSeekHarnessSessionFiles(root) {
   const files = [];
+  let supersededFiles = 0;
   const pending = [root];
   while (pending.length) {
     const directory = pending.pop();
+    const candidates = [];
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const entryPath = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(entryPath);
-      else if (entry.isFile() && (entry.name === "session.jsonl.zstd" || entry.name === "session.jsonl")) {
-        files.push(entryPath);
+      else if (entry.isFile()) {
+        const match = /^session(?:\.v([1-4]))?\.jsonl(\.zstd)?$/.exec(entry.name);
+        if (match) candidates.push({ path: entryPath, version: Number(match[1] || 0), compressed: Boolean(match[2]) });
       }
     }
+    // Format migrations leave older copies beside the active session artifact.
+    candidates.sort((a, b) => b.version - a.version || Number(b.compressed) - Number(a.compressed));
+    if (candidates.length) {
+      files.push(candidates[0].path);
+      supersededFiles += candidates.length - 1;
+    }
   }
-  return files.sort();
+  return { files: files.sort(), supersededFiles };
 }
 
 export function aggregateDeepSeekHarnessEvents(
   sessions,
   generatedAt = new Date().toISOString(),
-  { providerIds = ["deepseek", "deepseek-official"], sourceStats = {} } = {},
+  { providerIds = ["deepseek", "deepseek-official", "deepseek-account"], includeDeepSeekModels = false, sourceStats = {} } = {},
 ) {
   const allowedProviders = new Set(providerIds.map((value) => String(value).trim().toLowerCase()).filter(Boolean));
   const records = [];
@@ -424,7 +437,8 @@ export function aggregateDeepSeekHarnessEvents(
 
     for (const step of steps.values()) {
       const providerId = String(step.route?.provider || "").toLowerCase();
-      if (!step.date || !step.usage || !allowedProviders.has(providerId)) continue;
+      const deepSeekModel = includeDeepSeekModels && /^deepseek(?:[-_/.]|$)/i.test(step.route?.model || "");
+      if (!step.date || !step.usage || (!allowedProviders.has(providerId) && !deepSeekModel)) continue;
       records.push({
         date: step.date,
         modelName: `${step.route.provider}/${step.route.model}`,
@@ -440,21 +454,22 @@ export function aggregateDeepSeekHarnessEvents(
     provider: "deepseek-harness-session-zstd",
     recordCount: records.length,
     providerFilter: [...allowedProviders],
+    includesDeepSeekModelRoutes: includeDeepSeekModels,
     ...sourceStats,
   };
 }
 
 export function readDeepSeekHarnessUsage(provider) {
   const sessionRoot = provider?.usage?.sessionRoot
-    || process.env.DEEPSEEK_HARNESS_SESSION_ROOT
-    || join(process.env.DEEPSEEK_HARNESS_HOME || "D:\\deepseek-harness\\.dsh-home", "sessions");
+    || providerRegistry.resolveDeepSeekHarnessSessionRoot();
   if (!existsSync(sessionRoot)) throw new Error("DeepSeek Harness session directory was not found");
 
-  const files = deepSeekHarnessSessionFiles(sessionRoot);
+  const { files, supersededFiles } = deepSeekHarnessSessionFiles(sessionRoot);
   if (!files.length) throw new Error("DeepSeek Harness has no session logs");
   const sessions = [];
   const sourceStats = {
-    scannedFiles: files.length,
+    scannedFiles: files.length + supersededFiles,
+    supersededFiles,
     decodedFiles: 0,
     unreadableFiles: 0,
     decodedFrames: 0,
@@ -479,6 +494,7 @@ export function readDeepSeekHarnessUsage(provider) {
   if (!sourceStats.decodedFiles) throw new Error("DeepSeek Harness session logs could not be decoded");
   return aggregateDeepSeekHarnessEvents(sessions, new Date().toISOString(), {
     providerIds: provider?.usage?.providerIds,
+    includeDeepSeekModels: provider?.usage?.includeDeepSeekModels ?? !provider?.usage?.providerIds,
     sourceStats,
   });
 }
@@ -665,21 +681,26 @@ export function normalizeGrokBillingPayload(payload, fetchedAt = new Date().toIS
     end: config?.billingPeriodEnd,
   };
   const resetsAt = toIso(period?.end ?? config?.billingPeriodEnd);
-  const rawPercent = config?.creditUsagePercent;
+  const rawPercent = config?.creditUsagePercent ?? config?.credit_usage_percent;
   const explicitPercent = rawPercent === null || rawPercent === undefined || rawPercent === ""
     ? Number.NaN
     : Number(rawPercent);
   const usedPercent = Number.isFinite(explicitPercent)
     ? clampPercent(explicitPercent)
     : null;
-  if (usedPercent === null || !resetsAt) {
+  const tier = payload?.subscriptionTier ?? payload?.subscription_tier;
+  const knownBillingEnvelope = typeof tier === "string" && tier.trim()
+    && typeof config?.isUnifiedBillingUser === "boolean"
+    && Number.isFinite(new Date(period?.start).getTime())
+    && new Date(period.end).getTime() > new Date(period.start).getTime();
+  if (!resetsAt || (usedPercent === null && !knownBillingEnvelope)) {
     throw new Error("Grok Build billing response did not include a current usage period");
   }
   const durationMins = grokPeriodMinutes(period);
   const kind = String(period?.type || "").toLowerCase();
   const monthly = kind.includes("month") || (durationMins && durationMins > 20000);
-  const planType = typeof payload?.subscriptionTier === "string" && payload.subscriptionTier.trim()
-    ? payload.subscriptionTier.trim()
+  const planType = typeof tier === "string" && tier.trim()
+    ? tier.trim()
     : null;
   return {
     source: "grok-build",
@@ -690,11 +711,12 @@ export function normalizeGrokBillingPayload(payload, fetchedAt = new Date().toIS
       name: monthly ? "monthly_limit" : "weekly_limit",
       label: monthly ? "Grok 月度总额度" : planType ? `${planType} 周总额度` : "Grok 共享周额度",
       usedPercent,
-      remainingPercent: roundPercent(100 - usedPercent),
+      remainingPercent: usedPercent === null ? null : roundPercent(100 - usedPercent),
       windowDurationMins: durationMins,
       windowKind: monthly ? "monthly" : "weekly",
       resetsAt,
     }],
+    usagePercentAvailable: usedPercent !== null,
     unifiedBilling: config?.isUnifiedBillingUser === true,
     prepaidBalanceCents: Math.max(0, numberOrZero(config?.prepaidBalance?.val)),
     onDemandUsedCents: Math.max(0, numberOrZero(config?.onDemandUsed?.val)),
@@ -964,7 +986,8 @@ async function loadGrokBuildAccount(provider) {
     } catch (error) {
       snapshot.resetCreditsError = safeError(error);
     }
-    return { snapshot, usage };
+    return { snapshot, usage, snapshotWarnings: snapshot.usagePercentAvailable === false
+      ? ["Grok 已同步账期，接口未返回用量百分比；余额未知，不按 0% 处理"] : [] };
   } catch (error) {
     return {
       snapshot: null,
@@ -1088,6 +1111,20 @@ function codexWindow(name, value) {
   };
 }
 
+export function normalizeCodexAccountUsage(payload, fetchedAt = new Date().toISOString()) {
+  const number = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const summary = Object.fromEntries(["lifetimeTokens", "peakDailyTokens", "longestRunningTurnSec", "currentStreakDays", "longestStreakDays"]
+    .map((key) => [key, number(payload?.summary?.[key])]));
+  const buckets = new Map();
+  for (const row of Array.isArray(payload?.dailyUsageBuckets) ? payload.dailyUsageBuckets : []) {
+    if (typeof row?.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.startDate) && number(row.tokens) !== null) {
+      buckets.set(row.startDate, { date: row.startDate, tokens: row.tokens });
+    }
+  }
+  return { fetchedAt, scope: "official-account", summary,
+    daily: [...buckets.values()].sort((a, b) => a.date.localeCompare(b.date)) };
+}
+
 function fetchCodexQuota() {
   return new Promise((resolvePromise, rejectPromise) => {
     const { command, args } = codexAppServerInvocation();
@@ -1095,10 +1132,19 @@ function fetchCodexQuota() {
     let buffer = "";
     let stderr = "";
     let finished = false;
+    let quotaSnapshot = null;
+    let usageResponse;
+    let usageTimeout;
+    const completeQuota = () => {
+      if (!quotaSnapshot || usageResponse === undefined) return;
+      if (usageResponse) quotaSnapshot.accountUsage = normalizeCodexAccountUsage(usageResponse);
+      finish(null, quotaSnapshot);
+    };
     const finish = (error, value) => {
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
+      clearTimeout(usageTimeout);
       child.stdin.end();
       setTimeout(() => {
         if (child.exitCode === null) child.kill();
@@ -1125,6 +1171,8 @@ function fetchCodexQuota() {
         if (message.id === 1 && message.result) {
           send({ method: "initialized" });
           send({ method: "account/rateLimits/read", id: 2 });
+          send({ method: "account/usage/read", id: 3 });
+          usageTimeout = setTimeout(() => { usageResponse ??= null; completeQuota(); }, 5000);
         }
         if (message.id === 2) {
           if (message.error) {
@@ -1136,14 +1184,19 @@ function fetchCodexQuota() {
             finish(new Error("Codex did not return account quota data"));
             return;
           }
-          finish(null, {
+          quotaSnapshot = {
             source: "codex",
             fetchedAt: new Date().toISOString(),
             provider: "codex-app-server",
             planType: typeof limits.planType === "string" ? limits.planType : null,
             windows: [codexWindow("primary", limits.primary), codexWindow("secondary", limits.secondary)].filter(Boolean),
             individualLimitAvailable: limits.individualLimit !== null && limits.individualLimit !== undefined,
-          });
+          };
+          completeQuota();
+        }
+        if (message.id === 3) {
+          usageResponse = message.error ? null : message.result || null;
+          completeQuota();
         }
       }
     });
@@ -1161,7 +1214,7 @@ function fetchCodexQuota() {
     send({
       method: "initialize",
       id: 1,
-      params: { clientInfo: { name: "ai_token_ledger", title: "AI Token Ledger", version: "0.1.0" } },
+      params: { clientInfo: { name: "ai_token_ledger", title: "AI Token Ledger", version: "0.1.0" }, capabilities: { experimentalApi: true } },
     });
   });
 }
@@ -2193,11 +2246,12 @@ function usageTotal(usage) {
     numberOrZero(usage?.cacheCreationTokens);
 }
 
-function aggregateUsage(snapshot) {
+export function aggregateUsage(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.daily)) return null;
   const models = {};
   let totalTokens = 0;
-  for (const day of snapshot.daily) {
+  for (const original of snapshot.daily) {
+    const day = forecastModel.quotaUsageDay(original);
     const dayTotal = numberOrZero(day?.totalTokens);
     totalTokens += dayTotal;
     let modeledTotal = 0;
@@ -2217,7 +2271,7 @@ function aggregateUsage(snapshot) {
     }
     if (dayTotal > modeledTotal) models["unattributed"] = (models["unattributed"] || 0) + dayTotal - modeledTotal;
   }
-  return { totalTokens, models };
+  return { totalTokens, models, usageBasis: snapshot.autoReview?.quotaBasis || "local-token-v1" };
 }
 
 function currentUsageAggregate(source, inMemoryUsage) {
@@ -2225,7 +2279,10 @@ function currentUsageAggregate(source, inMemoryUsage) {
   const filePath = usageSnapshotPath(source);
   if (!filePath || !existsSync(filePath)) return null;
   try {
-    return { ...aggregateUsage(readJson(filePath)), usageFetchedAt: statSync(filePath).mtime.toISOString() };
+    const stat = statSync(filePath);
+    const original = readJson(filePath);
+    const snapshot = source === "codex" ? codexAutoReview.enrichCodexUsage(original, { cutoff: stat.mtimeMs }) : original;
+    return { ...aggregateUsage(snapshot), usageFetchedAt: stat.mtime.toISOString() };
   } catch (_) {
     return null;
   }
@@ -2306,12 +2363,16 @@ function persistObservations(source, observations) {
 
 function observationWindows(snapshot) {
   return [...(snapshot?.windows || [])]
-    .filter((window) => window?.selectable !== false && Number.isFinite(Number(window?.usedPercent)))
+    .filter((window) => window?.selectable !== false && window?.usedPercent !== null
+      && window?.usedPercent !== undefined && Number.isFinite(Number(window.usedPercent)))
     .sort((a, b) => (Number(b?.windowDurationMins) || 0) - (Number(a?.windowDurationMins) || 0));
 }
 
 export function detectObservationSegment(prior, current) {
   if (!prior) return { newSegment: true, resetDetected: false, reason: "first-observation" };
+  if ((prior.usageBasis || "local-token-v1") !== (current.usageBasis || "local-token-v1")) {
+    return { newSegment: true, resetDetected: false, reason: "usage-basis-changed" };
+  }
   if (prior.windowName && current.windowName && prior.windowName !== current.windowName) {
     return { newSegment: true, resetDetected: false, reason: "quota-window-changed" };
   }
@@ -2418,6 +2479,7 @@ function writeQuotaObservation(snapshot, usageAggregate) {
       resetAt: window.resetsAt || null,
       usedPercent,
       totalTokens,
+      usageBasis: usageAggregate?.usageBasis || "local-token-v1",
     });
     const newSegment = segmentDecision.newSegment;
     const segment = newSegment ? Number(prior?.segment || 0) + 1 : Number(prior.segment || 1);
@@ -2434,6 +2496,7 @@ function writeQuotaObservation(snapshot, usageAggregate) {
       resetAt: window.resetsAt || null,
       windowDurationMins: Number(window.windowDurationMins) || null,
       totalTokens,
+      usageBasis: usageAggregate?.usageBasis || "local-token-v1",
       usageFetchedAt: usageAggregate?.usageFetchedAt || null,
       models: windowUsage.models,
       resetDetected: segmentDecision.resetDetected,
@@ -2528,7 +2591,9 @@ function readQuotaSnapshotHistory(source) {
 function writeSnapshot(snapshot) {
   const source = snapshot.source;
   const filePath = snapshotFile(source);
-  const history = mergeQuotaSnapshotHistory(readQuotaSnapshotHistory(source), snapshot);
+  const previous = readQuotaSnapshotHistory(source);
+  snapshot = retainCodexAccountUsage(snapshot, previous);
+  const history = mergeQuotaSnapshotHistory(previous, snapshot);
   writeJsonAtomic(filePath, {
     source,
     updatedAt: new Date().toISOString(),
@@ -2538,6 +2603,13 @@ function writeSnapshot(snapshot) {
   });
   removeLegacyDatedFiles(join(QUOTA_ROOT, source), `quota-${source}`, { exclude: filePath });
   return filePath;
+}
+
+export function retainCodexAccountUsage(snapshot, history) {
+  if (snapshot.source !== "codex" || snapshot.accountUsage) return snapshot;
+  const previous = [...history].sort((a, b) => snapshotTimestamp(b) - snapshotTimestamp(a))
+    .find(entry => entry.source === "codex" && entry.accountUsage);
+  return previous ? { ...snapshot, accountUsage: { ...previous.accountUsage, stale: true } } : snapshot;
 }
 
 function selectedSources() {
@@ -2616,6 +2688,10 @@ async function main() {
   const results = [];
 
   for (const source of selectedSources()) {
+    if (!displaySettings.sourceSyncEnabled(DISPLAY_SETTINGS_PATH, PROVIDERS, source)) {
+      results.push({ source, ok: true, skipped: true, reason: "background sync disabled" });
+      continue;
+    }
     if (!accountSyncEnabled(settings, source)) {
       results.push({ source, ok: true, skipped: true, reason: "account sync disabled" });
       continue;

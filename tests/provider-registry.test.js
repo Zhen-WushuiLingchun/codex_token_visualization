@@ -156,6 +156,43 @@ test("Grok Build billing normalizes the official weekly percentage and reset", a
   assert.equal(unnamedPlan.windows[0].label, "Grok 共享周额度");
 });
 
+test("Grok Build newer billing envelopes preserve unknown balances and snake-case plans", async () => {
+  const { normalizeGrokBillingPayload } = await import("../scripts/sync-account-quotas.mjs");
+  const payload = {
+    subscription_tier: "SuperGrok",
+    config: { isUnifiedBillingUser: true, currentPeriod: {
+      type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-10-07T07:38:26Z", end: "2026-10-14T07:38:26Z",
+    } },
+  };
+  const snapshot = normalizeGrokBillingPayload(payload);
+  assert.equal(snapshot.planType, "SuperGrok");
+  assert.equal(snapshot.windows[0].usedPercent, null);
+  assert.equal(snapshot.windows[0].remainingPercent, null);
+  assert.equal(snapshot.windows[0].resetsAt, "2026-10-14T07:38:26.000Z");
+  assert.equal(snapshot.usagePercentAvailable, false);
+  const explicitZero = normalizeGrokBillingPayload({ ...payload, config: { ...payload.config, credit_usage_percent: 0 } });
+  assert.equal(explicitZero.windows[0].usedPercent, 0);
+  assert.equal(explicitZero.usagePercentAvailable, true);
+  assert.throws(() => normalizeGrokBillingPayload({ ...payload, config: { ...payload.config,
+    currentPeriod: { start: "bad", end: "bad" } } }), /current usage period/);
+});
+
+test("Codex official account usage stays separate and strips identifiers", async () => {
+  const { normalizeCodexAccountUsage } = await import("../scripts/sync-account-quotas.mjs");
+  const result = normalizeCodexAccountUsage({ account_id: "private-account", token: "private-token",
+    summary: { lifetimeTokens: 100, peakDailyTokens: 75, currentStreakDays: -1, email: "private-email" },
+    dailyUsageBuckets: [{ startDate: "2026-10-07", tokens: 75, id: "private-id" },
+      { startDate: "2026-10-06", tokens: 25 }, { startDate: "2026-10-07", tokens: 75 },
+      { startDate: "bad", tokens: 10000 }, { startDate: "2026-10-08", tokens: null }],
+  }, "2026-10-08T09:00:00Z");
+  assert.equal(result.scope, "official-account");
+  assert.equal(result.summary.lifetimeTokens, 100);
+  assert.equal(result.summary.currentStreakDays, null);
+  assert.deepEqual(result.daily, [{ date: "2026-10-06", tokens: 25 }, { date: "2026-10-07", tokens: 75 }]);
+  assert.equal(JSON.stringify(result).includes("private"), false);
+  assert.equal("totalTokens" in result, false);
+});
+
 test("Grok Build banked reset parser drops token ids and keeps expiry only", async () => {
   const { parseGrokResetCreditsBuffer } = await import("../scripts/sync-account-quotas.mjs");
   const varint = (input) => {
@@ -281,6 +318,87 @@ test("DeepSeek Harness final usage replaces stream usage and excludes other rout
   assert.equal(snapshot.daily[0].totalTokens, 39);
   assert.equal(snapshot.daily[0].reasoningOutputTokens, 3);
   assert.equal(snapshot.daily[0].modelBreakdowns[0].modelName, "deepseek-official/deepseek-v4-pro");
+});
+
+test("DeepSeek Harness resolves the desktop shared home while preserving explicit overrides", () => {
+  const home = path.resolve("example-home");
+  const resolve = (env, pathExists = () => false) => registry.resolveDeepSeekHarnessSessionRoot({ env, home, pathExists });
+  const desktopHome = path.resolve("desktop-data");
+  assert.equal(resolve({ DSH_HOME: desktopHome }), path.join(desktopHome, "sessions"));
+  assert.equal(resolve({ DSH_HOME: "~/.dsh-desktop" }), path.join(home, ".dsh-desktop", "sessions"));
+  assert.equal(resolve({ DSH_HOME: "   " }), path.join(home, ".dsh", "sessions"));
+  assert.equal(resolve({ DSH_HOME: desktopHome, DEEPSEEK_HARNESS_HOME: "custom-data" }), path.resolve("custom-data", "sessions"));
+  assert.equal(resolve({ DSH_HOME: desktopHome, DEEPSEEK_HARNESS_ROOT: "source-install" }), path.resolve("source-install", ".dsh-home", "sessions"));
+  assert.equal(resolve({ DSH_HOME: desktopHome, DEEPSEEK_HARNESS_SESSION_ROOT: "custom-sessions" }), path.resolve("custom-sessions"));
+  const legacy = path.join("D:\\deepseek-harness", ".dsh-home", "sessions");
+  assert.equal(resolve({}, (candidate) => candidate === legacy), legacy);
+  assert.equal(resolve({}, () => true), path.join(home, ".dsh", "sessions"));
+});
+
+test("DeepSeek Harness desktop versioned logs replace migrated copies and refresh without accumulation", async () => {
+  const { readDeepSeekHarnessUsage } = await import("../scripts/sync-account-quotas.mjs");
+  const { mergeUsageSnapshotHistory } = await import("../scripts/usage-storage.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-desktop-usage-"));
+  const oldTime = new Date(2026, 7, 24, 12).getTime();
+  const desktopTime = new Date(2026, 8, 30, 12).getTime();
+  const header = { type: "session", id: "private-session-id", createdAt: oldTime, version: 4 };
+  const message = (turn, time, provider, usage) => ({
+    type: "assistant/message", time,
+    data: { turn, step: 1, usage, message: { source: { kind: "model", provider, model: provider === "openai" ? "gpt-5.5" : "deepseek-v4-pro" }, content: "private-content" } },
+  });
+  const old = message(1, oldTime, "deepseek-official", { inputTokens: 10, outputTokens: 2 });
+  const desktop = (outputTokens) => message(2, desktopTime, "deepseek-account", {
+    inputTokens: 100, outputTokens, cacheReadTokens: 200, reasoningTokens: 20,
+  });
+  const write = (directory, name, events) => {
+    fs.mkdirSync(directory, { recursive: true });
+    const text = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+    fs.writeFileSync(path.join(directory, name), name.endsWith(".zstd") ? zstdCompressSync(text) : text);
+  };
+  try {
+    const migrated = path.join(root, "migrated");
+    write(migrated, "session.jsonl.zstd", [{ ...header, version: 0 }, old]);
+    for (const version of [1, 2, 3]) write(migrated, `session.v${version}.jsonl.zstd`, [header, old]);
+    const events = (output) => [
+      header, old, desktop(output),
+      message(3, desktopTime, "openai", { inputTokens: 999 }),
+      message(4, desktopTime, "custom-gateway", { inputTokens: 10, outputTokens: 2 }),
+    ];
+    write(migrated, "session.v4.jsonl.zstd", events(30));
+    write(path.join(root, "empty"), "session.v4.jsonl", [header]);
+    write(path.join(root, "plaintext"), "session.v4.jsonl", [
+      { ...header, createdAt: desktopTime },
+      message(1, desktopTime, "deepseek", { inputTokens: 5, outputTokens: 1 }),
+    ]);
+    write(path.join(root, "original"), "session.jsonl", [
+      { ...header, createdAt: oldTime },
+      message(1, oldTime, "deepseek-official", { inputTokens: 3, outputTokens: 1 }),
+    ]);
+    const provider = { usage: { sessionRoot: root } };
+    const first = readDeepSeekHarnessUsage(provider);
+    assert.equal(first.scannedFiles, 8);
+    assert.equal(first.supersededFiles, 4);
+    assert.equal(first.decodedFiles, 4);
+    assert.equal(first.recordCount, 5);
+    assert.equal(first.daily[0].totalTokens, 16);
+    assert.equal(first.daily[1].totalTokens, 348);
+    assert.equal(first.totals.totalTokens, 364);
+    assert.equal(first.daily[1].reasoningOutputTokens, 20);
+    assert.equal(JSON.stringify(first).includes("private-"), false);
+    assert.deepEqual(readDeepSeekHarnessUsage(provider).daily, first.daily);
+
+    write(migrated, "session.v4.jsonl.zstd", events(40));
+    const next = readDeepSeekHarnessUsage(provider);
+    const merged = mergeUsageSnapshotHistory([first], next);
+    assert.equal(merged.daily[0].totalTokens, 16);
+    assert.equal(merged.daily[1].totalTokens, 358);
+    assert.equal(merged.totals.totalTokens, 374);
+
+    const filtered = readDeepSeekHarnessUsage({ usage: { sessionRoot: root, providerIds: ["deepseek-official"] } });
+    assert.equal(filtered.totals.totalTokens, 16);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("OpenCode assistant messages aggregate by day and provider-qualified model", async () => {

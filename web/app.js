@@ -90,6 +90,7 @@ let latestResetCredits = null;
 let providerCatalog = [];
 let providerMeta = {};
 let visibleProviderIds = new Set();
+let disabledSyncProviderIds = new Set();
 let forecastAgent = null;
 let forecastSnapshots = {};
 let forecastQuotas = {};
@@ -168,33 +169,36 @@ async function loadProviderCatalog() {
   if (!providerResponse.ok) throw new Error(`Provider registry HTTP ${providerResponse.status}`);
   if (!settingsResponse.ok) throw new Error(`Display settings HTTP ${settingsResponse.status}`);
   const [providerPayload, settingsPayload] = await Promise.all([providerResponse.json(), settingsResponse.json()]);
+  disabledSyncProviderIds = new Set(settingsPayload.settings?.disabledSyncProviders || []);
   configureProviders(providerPayload.providers, settingsPayload.settings?.visibleProviders);
 }
 
 function selectedProviderIds() {
-  return [...els.providerSettingsList.querySelectorAll('input[type="checkbox"]:checked')]
+  return [...els.providerSettingsList.querySelectorAll('input[data-setting="visible"]:checked')]
     .map((input) => input.value);
 }
 
 function updateDisplaySettingsCount() {
   const count = selectedProviderIds().length;
   const available = providerCatalog.filter((entry) => entry.navigation !== false).length;
-  els.displaySettingsCount.textContent = `${count} / ${available} 已显示`;
+  const active = els.providerSettingsList.querySelectorAll('input[data-setting="sync"]:checked').length;
+  els.displaySettingsCount.textContent = `${count} / ${available} 已显示 · ${active} 个后台同步`;
   els.displaySettingsSave.disabled = count === 0;
 }
 
 function renderDisplaySettings() {
   els.providerSettingsList.replaceChildren();
   for (const provider of providerCatalog.filter((entry) => entry.navigation !== false)) {
-    const label = document.createElement("label");
+    const label = document.createElement("div");
     label.className = "provider-setting-row";
     label.innerHTML = `
-      <input type="checkbox" value="${escapeHtml(provider.id)}" ${visibleProviderIds.has(provider.id) ? "checked" : ""} />
       <span class="provider-setting-swatch" style="background:${escapeHtml(provider.color || "#9b4732")}"></span>
       <span class="provider-setting-copy">
         <strong>${escapeHtml(provider.label)}</strong>
         <span>${provider.forecast === false ? "本地用量" : "用量与额度预测"}</span>
       </span>
+      <label class="provider-setting-control"><input type="checkbox" data-setting="visible" value="${escapeHtml(provider.id)}" ${visibleProviderIds.has(provider.id) ? "checked" : ""} aria-label="显示 ${escapeHtml(provider.label)}" />显示</label>
+      <label class="provider-setting-control" title="关闭后停止后台采集，保留历史记录"><input type="checkbox" data-setting="sync" value="${escapeHtml(provider.id)}" ${disabledSyncProviderIds.has(provider.id) ? "" : "checked"} aria-label="后台同步 ${escapeHtml(provider.label)}" />后台同步</label>
     `;
     els.providerSettingsList.appendChild(label);
   }
@@ -218,10 +222,12 @@ async function saveDisplaySettings() {
     const response = await fetch("/api/display-settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ visibleProviders: selected }),
+      body: JSON.stringify({ visibleProviders: selected,
+        disabledSyncProviders: [...els.providerSettingsList.querySelectorAll('input[data-setting="sync"]:not(:checked)')].map((input) => input.value) }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    disabledSyncProviderIds = new Set(payload.settings?.disabledSyncProviders || []);
     configureProviders(providerCatalog, payload.settings?.visibleProviders);
     closeDisplaySettings();
     if (
@@ -233,7 +239,7 @@ async function saveDisplaySettings() {
     }
     await loadView(currentView);
   } catch (error) {
-    setStatus(`保存显示设置失败：${error.message}`, "error");
+    setStatus(`保存数据源设置失败：${error.message}`, "error");
     els.displaySettingsSave.disabled = false;
   }
 }
@@ -475,7 +481,7 @@ function longestQuotaWindow(snapshot) {
 
 function selectableQuotaWindows(snapshot) {
   return (Array.isArray(snapshot?.windows) ? snapshot.windows : [])
-    .filter((window) => window?.selectable !== false && Number.isFinite(Number(window?.usedPercent)));
+    .filter((window) => window?.selectable !== false && inputNumberOrNull(window?.usedPercent) !== null);
 }
 
 function selectedQuotaWindow(snapshot, requestedName) {
@@ -555,6 +561,7 @@ function mapQuotaObservation(observation) {
 
 function quotaObservationsShareSegment(previous, current) {
   if (!previous || !current || previous.windowName !== current.windowName) return false;
+  if ((previous.usageBasis || "local-token-v1") !== (current.usageBasis || "local-token-v1")) return false;
   const previousSegment = previous.segment === null || previous.segment === undefined ? null : String(previous.segment);
   const currentSegment = current.segment === null || current.segment === undefined ? null : String(current.segment);
   if (previousSegment !== null && currentSegment !== null && previousSegment !== currentSegment) return false;
@@ -571,9 +578,15 @@ function quotaObservationsShareSegment(previous, current) {
   return resetMatches && quotaMonotonic && usageMonotonic;
 }
 
+function compatibleQuotaObservations(quotaData) {
+  const points = Array.isArray(quotaData?.observations) ? quotaData.observations : [];
+  const basis = forecastSnapshots[quotaData?.source]?.autoReview?.quotaBasis;
+  return globalThis.ForecastModel.quotaObservationsForBasis(points, basis);
+}
+
 function quotaObservationSegments(quotaData, activeWindowName = null) {
   const resolvedWindowName = activeWindowName || longestQuotaWindow(quotaData?.latest)?.name || null;
-  const observations = [...(Array.isArray(quotaData?.observations) ? quotaData.observations : [])]
+  const observations = [...compatibleQuotaObservations(quotaData)]
     .filter((observation) =>
       Number.isFinite(Number(observation.usedPercent)) &&
       (!resolvedWindowName || observation.windowName === resolvedWindowName))
@@ -599,6 +612,7 @@ function quotaHistoryIntervals(quotaData, windowName = null) {
 function quotaWindowPoints(quotaData, activeWindowName = null) {
   const observationSegments = quotaObservationSegments(quotaData, activeWindowName);
   if (observationSegments.length) return observationSegments.at(-1);
+  if (forecastSnapshots[quotaData?.source]?.autoReview?.quotaBasis === "codex-chatgpt-auto-review-excluded-v1") return [];
   if (!quotaData?.daily?.length) return [];
   const latest = quotaData.latest;
   const latestWindow = selectedQuotaWindow(latest, activeWindowName);
@@ -686,7 +700,7 @@ function fitQuotaBurn(days, quotaData, account, dailyTokenRate, modelFit = null,
 function buildForecast(agent, requestedWindowName = forecastWindowSelections[agent]) {
   const plan = forecastPlan(agent);
   const snapshot = forecastSnapshots[agent] || {};
-  const days = localUsageDays(snapshot);
+  const days = localUsageDays(snapshot).map(globalThis.ForecastModel.quotaUsageDay);
   const today = localDateKey();
   const periodEnd = /^\d{4}-\d{2}-\d{2}$/.test(plan.periodEndsOn || "") ? plan.periodEndsOn : null;
   const cycleDays = clamp(Math.round(inputNumberOrNull(plan.cycleDays) || 7), 1, 90);
@@ -710,7 +724,7 @@ function buildForecast(agent, requestedWindowName = forecastWindowSelections[age
   const usageFetchedAt = snapshot.latestFile?.modifiedAt;
   const totalTokens = days.reduce((sum, day) => sum + (Number(day.totalTokens) || 0), 0);
   // A model-specific exhausted pool cannot establish that all provider work stopped.
-  const demandContext = { observations: selectedWindow?.modelPatterns?.length ? [] : quotaData?.observations || [],
+  const demandContext = { observations: selectedWindow?.modelPatterns?.length ? [] : compatibleQuotaObservations(quotaData),
     windowName: selectedWindowName, usageFetchedAt, currentUsage: { fetchedAt: usageFetchedAt, totalTokens } };
   const rawRate = buildForecastRate(days, plan.fallbackDailyTokens, demandContext);
   const rawQuotaFit = fitQuotaBurn(days, quotaData, account, rawRate.weightedRate, null, selectedWindowName);
@@ -971,6 +985,15 @@ function renderForecastRunway(forecast) {
     renderAccountRunway(forecast);
     return;
   }
+
+  const incompleteWindow = forecast.quotaData?.latest?.windows?.find((window) => window.resetsAt && inputNumberOrNull(window.usedPercent) === null);
+  if (incompleteWindow) {
+    els.forecastRunwayTitle.textContent = `${forecast.meta.label} · ${incompleteWindow.label || "账户额度"}`;
+    els.forecastPeriodPill.textContent = `重置 ${formatAccountTime(incompleteWindow.resetsAt)}`;
+    els.forecastRunway.appendChild(emptyState("账户接口未返回用量百分比"));
+    els.forecastAdvice.textContent = "余额未知，暂不生成额度耗尽预测。";
+    return;
+  }
   els.forecastRunwayTitle.textContent = `${forecast.meta.label} 账户额度`;
   els.forecastPeriodPill.textContent = "等待自动同步";
   els.forecastRunway.appendChild(emptyState("刷新后将自动读取账户额度与重置时间"));
@@ -1067,8 +1090,9 @@ function renderForecast(agent = forecastAgent) {
     return;
   }
 
-  renderForecastMetric("账户额度", "--", "等待自动同步");
-  renderForecastMetric("重置时间", "--", "由账户接口自动读取");
+  const incompleteWindow = forecast.quotaData?.latest?.windows?.find((window) => window.resetsAt && inputNumberOrNull(window.usedPercent) === null);
+  renderForecastMetric("账户额度", "--", incompleteWindow ? "接口未返回用量百分比" : "等待自动同步");
+  renderForecastMetric("重置时间", incompleteWindow ? formatAccountTime(incompleteWindow.resetsAt) : "--", "由账户接口自动读取");
   renderForecastMetric("综合日均", forecast.rate.weightedRate ? `${formatCompact(forecast.rate.weightedRate)} / 日` : "--", "今日、3 日、7 日加权");
   renderForecastMetric("预计耗尽", "--", "取得账户额度后自动计算");
   els.forecastSourcePill.textContent = forecast.snapshot?.latestFile
@@ -1168,6 +1192,11 @@ function renderResetCredits(data = latestResetCredits) {
 
   latestResetCredits = data;
   els.resetCreditList.replaceChildren();
+  if (data?.paused) {
+    els.resetCredits.classList.remove("is-warning");
+    els.resetSummary.textContent = data.message || "后台同步已暂停";
+    return;
+  }
 
   if (!data?.ok) {
     els.resetCredits.classList.add("is-warning");
@@ -1298,21 +1327,32 @@ function renderMetrics(days, totals, view, bundle = {}) {
 
   const recentTotal = sumRecent(days, (day) => Number(day.totalTokens) || 0, 30);
   renderMetric("最新日期", formatCompact(latestTotal), `${dayDate(latest)} · ${formatCost(dayCost(latest))}`);
-  renderMetric("累计 Token", formatCompact(totalTokenCount), `最近 30 条记录 ${formatCompact(recentTotal)}`);
+  const account = view === "codex" ? bundle.accountUsage : null;
+  const accountTotal = inputNumberOrNull(account?.summary?.lifetimeTokens);
+  const accountDate = account?.daily?.at(-1)?.date;
+  const accountSub = accountTotal !== null
+    ? `官方账户 ${formatCompact(accountTotal)}${accountDate ? ` · 截至 ${accountDate}` : ""}`
+    : `最近 30 条记录 ${formatCompact(recentTotal)}`;
+  renderMetric(view === "codex" ? "本机累计 Token" : "累计 Token", formatCompact(totalTokenCount), accountSub);
   renderMetric("缓存读取占比", formatPercent(cacheShare), `${formatCompact(totalParts.cachedInput)} cache read`);
-  renderMetric("费用估算", formatCost(totalCost), "本地 JSONL 统计，不等同订阅额度");
+  renderMetric("费用估算", formatCost(totalCost), view === "codex"
+    ? "API 参考估算，含审批调用；非账单或订阅扣减" : "API 参考估算，非账单或订阅扣减");
 }
 
 const trendRange = document.querySelector("#trendRange");
 const trendStart = document.querySelector("#trendStart");
 const trendEnd = document.querySelector("#trendEnd");
+const trendScope = document.querySelector("#trendScope");
+const comparisonDate = document.querySelector("#accountComparisonDate");
+let trendContext = { localDays: [], accountDays: [], account: null, label: "", codex: false };
+let accountTrendScope = "local";
+try { accountTrendScope = localStorage.getItem("ledger-codex-trend-scope") === "account" ? "account" : "local"; } catch (_) { /* Optional preference. */ }
 let trendSettings = { mode: "line", range: "30", start: "", end: "" };
 try {
   const saved = JSON.parse(localStorage.getItem("ledger-trend") || "null");
   if (saved && ["line", "heatmap"].includes(saved.mode)
     && ["30", "90", "180", "365", "all", "custom"].includes(saved.range)) trendSettings = saved;
 } catch (_) { /* Storage can be disabled by browser policy. */ }
-let trendSource = { days: [], label: "" };
 trendRange.value = trendSettings.range;
 trendStart.value = trendSettings.start || addDays(localDateKey(), -29);
 trendEnd.value = trendSettings.end || localDateKey();
@@ -1320,15 +1360,42 @@ trendEnd.value = trendSettings.end || localDateKey();
 function updateTrend() {
   trendSettings = { ...trendSettings, range: trendRange.value, start: trendStart.value, end: trendEnd.value };
   try { localStorage.setItem("ledger-trend", JSON.stringify(trendSettings)); } catch (_) { /* Optional preference. */ }
-  renderTrend(trendSource.days, trendSource.label);
+  renderScopedTrend();
 }
+function renderAccountComparison() {
+  const date = comparisonDate.value;
+  const accountDay = trendContext.accountDays.find(day => day.date === date);
+  const localDay = trendContext.localDays.find(day => dayKey(day) === date);
+  document.querySelector("#accountDayTokens").textContent = accountDay ? `${formatCompact(accountDay.totalTokens)} Token` : "未返回该日期";
+  document.querySelector("#localDayTokens").textContent = localDay ? `${formatCompact(localDay.totalTokens)} Token` : "无本地记录";
+  document.querySelector("#accountDayTokens").title = accountDay ? formatNumber(accountDay.totalTokens) : "";
+  document.querySelector("#localDayTokens").title = localDay ? formatNumber(localDay.totalTokens) : "";
+  const last = trendContext.accountDays.at(-1)?.date;
+  document.querySelector("#accountCoverage").textContent = `${trendContext.account?.stale ? "官方历史缓存" : "官方账户"}${last ? ` · 数据截至 ${last}` : " · 暂无数据"}。官方日期按服务端，本地${trendContext.timezone ? ` ${trendContext.timezone}` : "沿用导出时区"}；两者不补差、不合并。`;
+}
+function renderScopedTrend() {
+  const official = trendContext.codex && accountTrendScope === "account";
+  const label = official ? "官方账户活动" : trendContext.label;
+  els.trendTitle.textContent = official ? "官方账户活动" : trendContext.title || "最近使用量";
+  renderTrend(official ? trendContext.accountDays : trendContext.localDays, label, !official);
+  if (official) {
+    const last = trendContext.accountDays.at(-1)?.date;
+    document.querySelector("#trendSummary").textContent += ` · ${trendContext.account?.stale ? "历史缓存" : "官方每日桶"}${last ? ` · 截至 ${last}` : " · 暂无数据"}`;
+  }
+}
+trendScope.addEventListener("change", () => {
+  accountTrendScope = trendScope.value === "account" ? "account" : "local";
+  try { localStorage.setItem("ledger-codex-trend-scope", accountTrendScope); } catch (_) { /* Optional preference. */ }
+  renderScopedTrend();
+});
+comparisonDate.addEventListener("change", renderAccountComparison);
 document.querySelectorAll("[data-trend-mode]").forEach((button) => button.addEventListener("click", () => {
   trendSettings.mode = button.dataset.trendMode;
   updateTrend();
 }));
 [trendRange, trendStart, trendEnd].forEach((control) => control.addEventListener("change", updateTrend));
 
-function renderHeatmap(selection, label) {
+function renderHeatmap(selection, label, showCost) {
   const wrap = document.createElement("div");
   wrap.className = "heatmap-scroll";
   const calendar = document.createElement("div");
@@ -1357,7 +1424,7 @@ function renderHeatmap(selection, label) {
   detail.setAttribute("aria-live", "polite");
   const buttons = [];
   const describe = (row) => row.recorded
-    ? `${row.date} · ${formatNumber(row.totalTokens)} Token · ${formatCost(row.costUSD)}`
+    ? `${row.date} · ${formatNumber(row.totalTokens)} Token${showCost ? ` · ${formatCost(row.costUSD)}` : ""}`
     : `${row.date} · 无用量记录`;
   for (let i = 0; i < selection.offset; i++) grid.appendChild(document.createElement("span"));
   selection.rows.forEach((row, index) => {
@@ -1407,8 +1474,7 @@ function renderHeatmap(selection, label) {
   wrap.scrollLeft = wrap.scrollWidth;
 }
 
-function renderTrend(days, label) {
-  trendSource = { days, label };
+function renderTrend(days, label, showCost = true) {
   els.trendChart.replaceChildren();
   document.querySelector("#trendDates").hidden = trendSettings.range !== "custom";
   document.querySelectorAll("[data-trend-mode]").forEach((button) => {
@@ -1423,7 +1489,7 @@ function renderTrend(days, label) {
     return;
   }
   if (trendSettings.mode === "heatmap") {
-    renderHeatmap(selection, label);
+    renderHeatmap(selection, label, showCost);
     return;
   }
 
@@ -1477,7 +1543,7 @@ function renderTrend(days, label) {
 
   recent.forEach((day, index) => {
     const x = left + index * step;
-    const costHeight = (dayCost(day) / maxCost) * (chartHeight * 0.42);
+    const costHeight = showCost ? (dayCost(day) / maxCost) * (chartHeight * 0.42) : 0;
     const bar = document.createElementNS(svg.namespaceURI, "rect");
     bar.setAttribute("class", "cost-bar");
     const barWidth = Math.max(0.5, Math.min(14, step * 0.6));
@@ -1486,7 +1552,7 @@ function renderTrend(days, label) {
     bar.setAttribute("width", barWidth);
     bar.setAttribute("height", costHeight);
     bar.setAttribute("rx", 3);
-    svg.appendChild(bar);
+    if (showCost) svg.appendChild(bar);
 
     if (index === 0 || index === recent.length - 1 || (index % Math.ceil(recent.length / 5) === 0 && index < recent.length - Math.ceil(recent.length / 10))) {
       const text = document.createElementNS(svg.namespaceURI, "text");
@@ -1528,7 +1594,7 @@ function renderTrend(days, label) {
     svg.appendChild(dot);
 
     const title = document.createElementNS(svg.namespaceURI, "title");
-    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens, ${formatCost(dayCost(point.day))}`;
+    title.textContent = `${dayDate(point.day)}: ${formatNumber(point.day.totalTokens)} tokens${showCost ? `, ${formatCost(dayCost(point.day))}` : ""}`;
     dot.appendChild(title);
   });
 
@@ -1595,28 +1661,22 @@ function renderBreakdown(days) {
 function collectModels(days) {
   const totals = new Map();
   days.forEach((day) => {
-    if (day.models && typeof day.models === "object") {
-      Object.entries(day.models).forEach(([name, model]) => {
-        totals.set(name, (totals.get(name) || 0) + (Number(model.totalTokens) || 0));
-      });
-    }
-
-    if (Array.isArray(day.modelBreakdowns)) {
-      day.modelBreakdowns.forEach((model) => {
-        const name = model.modelName || model.name || "unknown";
-        const parts = tokenParts(model);
-        const total = Number(model.totalTokens) || parts.displayTotal;
-        totals.set(name, (totals.get(name) || 0) + total);
-      });
-    }
+    dayModels(day).forEach((model) => {
+      const name = model.displayName || model.modelName || model.name || "unknown";
+      const parts = tokenParts(model);
+      const total = Number(model.totalTokens) || parts.displayTotal;
+      const entry = totals.get(name) || { name, total: 0, autoReview: model.usageRole === "auto-review", quotaExempt: model.planQuotaExempt === true };
+      entry.total += total;
+      totals.set(name, entry);
+    });
   });
-
-  return [...totals.entries()]
-    .map(([name, total]) => ({ name, total }))
+  return [...totals.values()]
     .sort((a, b) => b.total - a.total);
 }
 
 function modelNames(day) {
+  const models = dayModels(day);
+  if (models.length) return [...new Set(models.map((model) => model.displayName || model.modelName || model.name).filter(Boolean))];
   if (day.models && typeof day.models === "object") return Object.keys(day.models);
   if (Array.isArray(day.modelsUsed)) return day.modelsUsed;
   if (Array.isArray(day.modelBreakdowns)) {
@@ -1638,9 +1698,13 @@ function renderModels(days) {
   models.forEach((model) => {
     const row = document.createElement("div");
     row.className = "model-row";
+    if (model.autoReview) row.title = model.quotaExempt
+      ? "自动审批：ChatGPT 登录时免费，不扣套餐额度。Luna 是 ccusage 的估算映射，并非用户选择的模型。"
+      : "自动审批：当前登录类型未确认为 ChatGPT，未假定免费。估算映射不代表实际后台模型。";
     row.innerHTML = `
       <div class="model-main">
         <div class="model-name">${escapeHtml(model.name)}</div>
+        ${model.autoReview ? `<div class="model-role">${model.quotaExempt ? "审批调用 · ChatGPT 套餐免费" : "审批调用 · 计费口径未确认"}</div>` : ""}
         <div class="model-track">
           <div class="model-fill" style="width:${(model.total / max) * 100}%"></div>
         </div>
@@ -1751,6 +1815,7 @@ function mergeUsageSnapshots(bundle) {
         day.modelBreakdowns.push({
           ...model,
           modelName: `${provider.shortLabel || provider.label} · ${model.modelName || model.name || "unknown"}`,
+          displayName: `${provider.shortLabel || provider.label} · ${model.displayName || model.modelName || model.name || "unknown"}`,
         });
       }
       byDay.set(date, day);
@@ -1808,7 +1873,7 @@ function renderSourceStatus(payload) {
     node.innerHTML = `
       <div>
         <p class="section-label">${escapeHtml(source.label)}</p>
-        <h3>${source.detected ? "已检测" : "未检测"}</h3>
+        <h3>${source.syncEnabled === false ? "后台同步已暂停" : source.detected ? "已检测" : "未检测"}</h3>
         <p>${latest ? `最新 ${escapeHtml(latest.name)}` : "尚未导出快照"}</p>
       </div>
       <div class="source-status-lines">
@@ -1835,7 +1900,14 @@ function renderUsage(data, view, bundle = {}) {
   els.tableTitle.textContent = `${config.label} 每日明细`;
 
   renderMetrics(days, data.totals || {}, view, bundle);
-  renderTrend(days, config.label);
+  trendContext = { localDays: days, accountDays: TrendData.accountSeries(bundle.accountUsage),
+    account: bundle.accountUsage, label: config.label, title: config.trendTitle, codex: view === "codex", timezone: data.timezone };
+  trendScope.hidden = view !== "codex";
+  trendScope.value = accountTrendScope;
+  document.querySelector("#accountComparison").hidden = view !== "codex";
+  comparisonDate.value = trendContext.accountDays.at(-1)?.date || localDateKey();
+  renderScopedTrend();
+  renderAccountComparison();
   renderBreakdown(days);
   renderModels(days);
   renderSnapshots(data);
@@ -2099,6 +2171,10 @@ async function loadResetPlannerView() {
       ]);
       if (generation !== resetPlannerGeneration || currentView !== "resets") return;
       if (!credits.ok) throw new Error(`重置库存读取失败：${credits.message}`);
+      if (credits.paused) {
+        sections.push(renderResetPlan(provider, null, null, "后台同步已暂停"));
+        continue;
+      }
       forecastSnapshots[provider.id] = usage;
       forecastQuotas[provider.id] = quota;
       const policy = credits.planningPolicy;
@@ -2177,9 +2253,13 @@ async function loadView(view = currentView) {
       return;
     }
 
-    const data = await fetchUsage(config.source);
-    renderUsage(data, currentView);
-    setStatus(data.latestFile ? `已读取 ${data.latestFile.name}` : `未发现 ${config.label} 导出文件`, data.latestFile ? "ok" : "loading");
+    const [data, quota] = await Promise.all([
+      fetchUsage(config.source),
+      currentView === "codex" ? fetchQuota("codex").catch(() => null) : null,
+    ]);
+    renderUsage(data, currentView, { accountUsage: quota?.latest?.accountUsage });
+    setStatus(disabledSyncProviderIds.has(config.source) ? `${config.label} 后台同步已暂停 · 显示历史记录`
+      : data.latestFile ? `已读取 ${data.latestFile.name}` : `未发现 ${config.label} 导出文件`, data.latestFile ? "ok" : "loading");
   } catch (error) {
     setStatus(`读取失败：${error.message}`, "error");
   }
@@ -2209,7 +2289,7 @@ async function loadResetCredits() {
       ok: successful.length > 0,
       partial: failures.length > 0,
       message: payloads.map((payload) => `${payload.source_label}：${payload.message || "读取失败"}`).join("；"),
-      summary: payloads.map((payload) => payload.ok
+      summary: payloads.map((payload) => payload.paused ? `${payload.source_label}：后台同步已暂停` : payload.ok
         ? `${payload.source_label} 可用 ${Number(payload.available_count) || 0} 次`
         : `${payload.source_label}：${payload.message || "读取失败"}`).join("；"),
       available_count: successful.reduce((sum, payload) => sum + (Number(payload.available_count) || 0), 0),
@@ -2249,18 +2329,21 @@ async function exportAndRefresh(scope = "current") {
       ...(Array.isArray(viewFailures) ? viewFailures : []), ...creditFailures,
     ].map((item) => [item.source, item])).values()];
     if (data.partial || failures.length) {
-      const failed = failures
-        .map((item) => {
+      const describe = (item) => {
           const error = String(item.error || item.warning || item.warnings?.join("; ") || "");
           if (item.source === "quota:claude" && /claude auth login/i.test(error)) {
             return "quota:claude（需重新登录 Claude Code）";
           }
+          if (item.source === "quota:cursor" && /401/.test(error)) return "Cursor（凭证失效，需重新登录或暂停同步）";
           return error ? `${item.source}（${error.slice(0, 220)}）` : item.source;
-        })
-        .join(", ") || "后台返回部分失败，请检查数据源状态";
-      setStatus(`部分导出完成，失败来源：${failed}`, "error");
+      };
+      const failed = failures.filter((item) => !item.ok).map(describe).join("；");
+      const warnings = failures.filter((item) => item.ok && item.partial).map(describe).join("；");
+      setStatus(failed ? `部分刷新完成：${failed}${warnings ? `；提示：${warnings}` : ""}`
+        : `刷新完成，部分数据待补齐：${warnings || "请检查数据源状态"}`, failed ? "error" : "warning");
     } else {
-      setStatus(exportSource === "everything" ? "已导出并刷新全部数据源" : "已导出并刷新当前视图", "ok");
+      const paused = (data.results || []).some((item) => item.skipped);
+      setStatus(exportSource === "everything" ? `已刷新启用的数据源${paused ? "；暂停来源保留历史" : ""}` : "已导出并刷新当前视图", "ok");
     }
   } catch (error) {
     setStatus(`导出刷新失败：${error.message}`, "error");
@@ -2297,7 +2380,7 @@ els.displaySettingsBtn.addEventListener("click", openDisplaySettings);
 els.displaySettingsClose.addEventListener("click", closeDisplaySettings);
 els.displaySettingsCancel.addEventListener("click", closeDisplaySettings);
 els.displaySettingsAll.addEventListener("click", () => {
-  els.providerSettingsList.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+  els.providerSettingsList.querySelectorAll('input[data-setting="visible"]').forEach((input) => {
     input.checked = true;
   });
   updateDisplaySettingsCount();

@@ -56,6 +56,65 @@ test("usage history accepts aggregate period dates", async () => {
   assert.equal(merged.totals.totalTokens, 25);
 });
 
+test("timezone changes rebuild dates without adding overlapping history or discarding the old ledger", async () => {
+  const { mergeUsageSnapshotHistory } = await import("../scripts/usage-storage.mjs");
+  const old = { timezone: "Asia/Tokyo", daily: [{ date: "2026-10-08", totalTokens: 100 }], totals: { totalTokens: 100 } };
+  const current = { timezone: "Asia/Shanghai", daily: [
+    { date: "October 07, 2026", totalTokens: 20 }, { date: "2026-10-08", totalTokens: 80 },
+  ], totals: { totalTokens: 100 }, rangeDays: 2 };
+  const before = JSON.stringify(old);
+  const merged = mergeUsageSnapshotHistory([old], current);
+  assert.deepEqual(merged.daily.map(day => [day.date, day.totalTokens]), [["2026-10-07", 20], ["2026-10-08", 80]]);
+  assert.equal(merged.totals.totalTokens, 100);
+  assert.deepEqual(merged.timezoneHistory, [old]);
+  assert.equal(JSON.stringify(old), before);
+  const refreshed = mergeUsageSnapshotHistory([old, merged], current);
+  assert.deepEqual(refreshed, merged);
+  const next = mergeUsageSnapshotHistory([merged], { ...current,
+    daily: [{ date: "2026-10-08", totalTokens: 90 }], totals: { totalTokens: 90 } });
+  assert.equal(next.totals.totalTokens, 110);
+  assert.equal(next.daily[0].totalTokens, 20);
+  assert.deepEqual(next.timezoneHistory, [old]);
+});
+
+test("explicit legacy timezone migrates unlabelled storage and retains the old ledger in the same file", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { writeConsolidatedUsageSnapshot } = await import("../scripts/usage-storage.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-timezone-"));
+  try {
+    const output = path.join(root, "codex-usage.json");
+    fs.writeFileSync(output, JSON.stringify({ daily: [{ date: "2026-10-08", totalTokens: 100 }], totals: { totalTokens: 100 } }));
+    const incoming = { timezone: "Asia/Shanghai", daily: [{ date: "2026-10-07", totalTokens: 90 }], totals: { totalTokens: 90 } };
+    const merged = writeConsolidatedUsageSnapshot({ output, prefix: "codex-usage", roots: [root], incoming, legacyTimezone: "Asia/Tokyo" });
+    assert.equal(merged.totals.totalTokens, 90);
+    assert.equal(merged.daily.length, 1);
+    assert.equal(merged.timezoneHistory[0].totals.totalTokens, 100);
+    assert.deepEqual(fs.readdirSync(root), ["codex-usage.json"]);
+    assert.deepEqual(writeConsolidatedUsageSnapshot({ output, prefix: "codex-usage", roots: [root], incoming }), merged);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("optional Codex account RPC failure retains dated cached stats without replacing fresh quota or other providers", async () => {
+  const { retainCodexAccountUsage } = await import("../scripts/sync-account-quotas.mjs");
+  const accountUsage = { fetchedAt: "2026-10-07T01:00:00Z", summary: { lifetimeTokens: 123 }, daily: [{ date: "2026-10-06", tokens: 123 }] };
+  const previous = { source: "codex", fetchedAt: "2026-10-07T01:00:00Z", accountUsage };
+  const freshQuota = { source: "codex", fetchedAt: "2026-10-08T01:00:00Z", windows: [{ usedPercent: 30 }] };
+  const retained = retainCodexAccountUsage(freshQuota, [previous]);
+  assert.deepEqual(retained.windows, freshQuota.windows);
+  assert.equal(retained.fetchedAt, freshQuota.fetchedAt);
+  assert.equal(retained.accountUsage.fetchedAt, accountUsage.fetchedAt);
+  assert.equal(retained.accountUsage.stale, true);
+  assert.equal(previous.accountUsage.stale, undefined);
+  assert.equal(freshQuota.accountUsage, undefined);
+  const fresh = { ...freshQuota, accountUsage: { ...accountUsage, fetchedAt: freshQuota.fetchedAt } };
+  assert.equal(retainCodexAccountUsage(fresh, [previous]), fresh);
+  const claude = { ...freshQuota, source: "claude" };
+  assert.equal(retainCodexAccountUsage(claude, [previous]), claude);
+  assert.equal(retainCodexAccountUsage(freshQuota, []), freshQuota);
+});
+
 test("quota history removes entries outside the rolling retention window", async () => {
   const { mergeQuotaSnapshotHistory } = await import("../scripts/sync-account-quotas.mjs");
   const merged = mergeQuotaSnapshotHistory(

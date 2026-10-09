@@ -1,6 +1,7 @@
 param(
   [string]$Source = "codex",
-  [string]$Timezone = "Asia/Tokyo",
+  [string]$Timezone,
+  [string]$LegacyTimezone,
   [string]$OutputRoot,
   [string]$FileDate
 )
@@ -16,6 +17,10 @@ if ($LASTEXITCODE -ne 0 -or -not $ConfigBase64) {
 }
 $ConfigJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(($ConfigBase64 -join "")))
 $Config = $ConfigJson | ConvertFrom-Json
+if ($Config.syncEnabled -eq $false) {
+  Write-Host "Skipped $Source : background sync is disabled. Existing history was preserved."
+  exit 0
+}
 
 $DailyRoot = if ($OutputRoot) { Join-Path $OutputRoot "daily" } else { [string]$Config.logRoot }
 $NpmCache = Join-Path $ProjectRoot ".npm-cache"
@@ -35,6 +40,11 @@ if ($NodeVersion -notmatch "^v?(\d+)") {
 $NodeMajor = [int]$Matches[1]
 if ($NodeMajor -lt 22) {
   throw "ccusage@latest requires Node.js 22 or newer. Current version: $NodeVersion"
+}
+
+if (-not $Timezone) {
+  $Timezone = (& node -p "Intl.DateTimeFormat().resolvedOptions().timeZone") -join ""
+  if ($LASTEXITCODE -ne 0 -or -not $Timezone) { throw "Could not detect the local timezone" }
 }
 
 $OutputFile = Join-Path $DailyRoot "$($Config.filePrefix).json"
@@ -60,6 +70,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $parsed = $json | ConvertFrom-Json
+$parsed | Add-Member -NotePropertyName timezone -NotePropertyValue $Timezone -Force
 $formattedJson = $parsed | ConvertTo-Json -Depth 100
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $TemporaryFile = "$OutputFile.$PID.tmp"
@@ -77,6 +88,7 @@ try {
       $MergeArgs += @("--root", [string]$LegacyRoot)
     }
   }
+  if ($LegacyTimezone) { $MergeArgs += @("--legacy-timezone", $LegacyTimezone) }
   & node @MergeArgs | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Usage history consolidation failed with exit code $LASTEXITCODE"

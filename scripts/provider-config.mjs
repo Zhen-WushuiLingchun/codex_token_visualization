@@ -1,4 +1,10 @@
 import registry from "../providers/registry.js";
+import settings from "../lib/display-settings.js";
+import { resolve, join } from "node:path";
+
+const root = process.env.USAGE_LOG_ROOT || join(resolve(import.meta.dirname, ".."), "usage-logs");
+const settingsPath = process.env.DISPLAY_SETTINGS_PATH || join(root, "display-settings.json");
+const syncEnabled = (id) => settings.sourceSyncEnabled(settingsPath, registry.PROVIDERS, id);
 
 function output(value) {
   const json = JSON.stringify(value);
@@ -10,7 +16,7 @@ function output(value) {
 }
 
 if (process.argv.includes("--ccusage-sources")) {
-  output(registry.ALL_SOURCES.filter((entry) => entry.usage.adapter === "ccusage").map((entry) => entry.id));
+  output(registry.ALL_SOURCES.filter((entry) => entry.usage.adapter === "ccusage" && syncEnabled(entry.id)).map((entry) => entry.id));
 } else {
   const sourceIndex = process.argv.indexOf("--source");
   const source = sourceIndex >= 0 ? process.argv[sourceIndex + 1] : null;
@@ -21,6 +27,7 @@ if (process.argv.includes("--ccusage-sources")) {
   } else {
     output({
       id: provider.id,
+      syncEnabled: syncEnabled(provider.id),
       filePrefix: provider.usage.filePrefix,
       ccusageArgs: provider.usage.ccusageArgs,
       logRoot: provider.usage.logRoot,

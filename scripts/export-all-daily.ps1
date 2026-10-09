@@ -1,5 +1,5 @@
 param(
-  [string]$Timezone = "Asia/Tokyo",
+  [string]$Timezone,
   [string]$FileDate
 )
 
@@ -19,7 +19,7 @@ foreach ($SourceId in $ParsedSources) {
   $Sources += [string]$SourceId
 }
 if ($Sources.Count -eq 0) {
-  throw "No registered ccusage providers were returned"
+  Write-Host "All ccusage sources are paused; existing history was preserved."
 }
 $Failures = @()
 
@@ -29,9 +29,9 @@ foreach ($Source in $Sources) {
       "-NoProfile",
       "-ExecutionPolicy", "Bypass",
       "-File", $ExportScript,
-      "-Source", $Source,
-      "-Timezone", $Timezone
+      "-Source", $Source
     )
+    if ($Timezone) { $args += @("-Timezone", $Timezone) }
 
     if ($FileDate) {
       $args += @("-FileDate", $FileDate)

@@ -1,14 +1,25 @@
 const os = require("node:os");
 const path = require("node:path");
+const { existsSync } = require("node:fs");
 
 const ROOT = path.resolve(__dirname, "..");
 const USAGE_ROOT = process.env.USAGE_LOG_ROOT || path.join(ROOT, "usage-logs");
 const APP_DATA = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-const DEEPSEEK_HARNESS_ROOT = process.env.DEEPSEEK_HARNESS_ROOT || "D:\\deepseek-harness";
-const DEEPSEEK_HARNESS_HOME = process.env.DEEPSEEK_HARNESS_HOME
-  || path.join(DEEPSEEK_HARNESS_ROOT, ".dsh-home");
-const DEEPSEEK_HARNESS_SESSION_ROOT = process.env.DEEPSEEK_HARNESS_SESSION_ROOT
-  || path.join(DEEPSEEK_HARNESS_HOME, "sessions");
+function resolveDeepSeekHarnessSessionRoot({ env = process.env, home = os.homedir(), pathExists = existsSync } = {}) {
+  const configured = (name) => String(env[name] || "").trim();
+  const expand = (value) => value === "~" ? home : value.replace(/^~[\\/]/, `${home}${path.sep}`);
+  const sessionRoot = configured("DEEPSEEK_HARNESS_SESSION_ROOT");
+  if (sessionRoot) return path.resolve(expand(sessionRoot));
+  const harnessHome = configured("DEEPSEEK_HARNESS_HOME")
+    || (configured("DEEPSEEK_HARNESS_ROOT") && path.join(configured("DEEPSEEK_HARNESS_ROOT"), ".dsh-home"))
+    || configured("DSH_HOME");
+  if (harnessHome) return path.resolve(expand(harnessHome), "sessions");
+  const standard = path.join(home, ".dsh", "sessions");
+  const legacy = path.join("D:\\deepseek-harness", ".dsh-home", "sessions");
+  return pathExists(standard) || !pathExists(legacy) ? standard : legacy;
+}
+
+const DEEPSEEK_HARNESS_SESSION_ROOT = resolveDeepSeekHarnessSessionRoot();
 const GROK_HOME = process.env.GROK_HOME || path.join(os.homedir(), ".grok");
 const GROK_BUILD_SESSION_ROOT = process.env.GROK_BUILD_SESSION_ROOT
   || path.join(GROK_HOME, "sessions");
@@ -182,7 +193,7 @@ const PROVIDERS = Object.freeze([
     tone: "deepseek",
     color: "#4c64b8",
     planLabel: null,
-    subtitle: "DeepSeek Harness 本地会话计量",
+    subtitle: "DeepSeek Harness 桌面 / CLI 会话计量",
     trendTitle: "DeepSeek Harness 最近使用量",
     breakdownTitle: "DeepSeek Harness Token 构成",
     forecast: false,
@@ -192,13 +203,14 @@ const PROVIDERS = Object.freeze([
       filePrefix: "deepseek-harness-usage",
       logRoot: usageDirectory("deepseek-harness", "DEEPSEEK_HARNESS_USAGE_LOG_DIR"),
       sessionRoot: DEEPSEEK_HARNESS_SESSION_ROOT,
-      providerIds: String(process.env.DEEPSEEK_HARNESS_PROVIDER_IDS || "deepseek,deepseek-official")
+      providerIds: (String(process.env.DEEPSEEK_HARNESS_PROVIDER_IDS || "").trim() || "deepseek,deepseek-official,deepseek-account")
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
+      includeDeepSeekModels: !String(process.env.DEEPSEEK_HARNESS_PROVIDER_IDS || "").trim(),
     },
     quota: null,
-    sourceDescription: "DeepSeek Harness local Zstandard session usage events",
+    sourceDescription: "DeepSeek Harness desktop / CLI shared DSH_HOME session usage events",
   }),
   provider({
     id: "grok-build",
@@ -290,4 +302,5 @@ module.exports = {
   ALL_SOURCES,
   getProvider,
   publicProvider,
+  resolveDeepSeekHarnessSessionRoot,
 };

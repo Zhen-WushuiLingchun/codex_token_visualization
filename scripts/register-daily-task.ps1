@@ -1,7 +1,7 @@
 param(
   [string]$TaskName = "AITokenLedgerDailyExport",
   [string]$At = "12:00",
-  [string]$Timezone = "Asia/Tokyo",
+  [string]$Timezone,
   [switch]$Force
 )
 
@@ -25,7 +25,8 @@ if ($existing -and $Force) {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-$argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ExportScript`" -Timezone `"$Timezone`""
+$argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ExportScript`""
+if ($Timezone) { $argument += " -Timezone `"$Timezone`"" }
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argument -WorkingDirectory $ProjectRoot
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
@@ -34,5 +35,5 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 Write-Host "Registered daily task: $TaskName"
 Write-Host "Runs every day at: $At"
-Write-Host "Timezone argument for ccusage: $Timezone"
+Write-Host "Timezone: $(if ($Timezone) { $Timezone } else { 'system local timezone' })"
 Write-Host "Output folder: $(Join-Path $ProjectRoot 'usage-logs')"

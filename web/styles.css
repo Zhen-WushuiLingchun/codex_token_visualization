@@ -420,7 +420,6 @@ main {
   min-height: 62px;
   padding: 10px 22px;
   border-bottom: 1px solid rgba(45, 40, 34, 0.09);
-  cursor: pointer;
 }
 
 .provider-setting-row:last-child {
@@ -446,14 +445,35 @@ main {
 
 .provider-setting-copy {
   display: grid;
+  flex: 1;
   min-width: 0;
   gap: 3px;
 }
 
 .provider-setting-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+.provider-setting-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 480px) {
+  .provider-setting-row {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-inline: 14px;
+  }
+  .provider-setting-control:last-child {
+    grid-column: 2 / 4;
+    justify-self: end;
+  }
 }
 
 .provider-setting-copy span {
@@ -1208,6 +1228,13 @@ main {
 .trend-dates[hidden] { display: none; }
 .trend-dates label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
 .trend-summary, .heatmap-detail { color: var(--ink-soft); font-size: 13px; margin: 12px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.account-comparison { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.account-comparison label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--ink-soft); font-size: 13px; }
+.account-comparison input { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); padding: 7px 9px; color: var(--ink); min-width: 0; max-width: 100%; }
+.account-comparison dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 14px 0 0; }
+.account-comparison dt { color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
+.account-comparison dd { margin: 6px 0 0; font-size: 22px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .account-comparison dl { grid-template-columns: 1fr; gap: 10px; } }
 .heatmap-scroll { overflow-x: auto; max-width: 100%; padding: 14px 0 16px; scrollbar-width: thin; }
 .heatmap-calendar { display: grid; grid-template-columns: 24px max-content; grid-template-rows: 24px auto; gap: 4px; width: max-content; padding-right: 8px; }
 .heatmap-months { grid-column: 2; display: grid; grid-template-columns: repeat(var(--weeks), 18px); font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -1361,6 +1388,17 @@ button.heatmap-cell:hover, button.heatmap-cell:focus-visible { outline: 2px soli
   overflow: hidden;
   border-radius: 999px;
   background: rgba(45, 40, 34, 0.09);
+}
+
+.model-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-role {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .model-fill {

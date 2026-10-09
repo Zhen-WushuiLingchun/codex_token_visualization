@@ -34,7 +34,7 @@ OpenCode 页面直接汇总本地 SQLite 中的 assistant token 字段，按 `pr
 
 ### DeepSeek Harness 本地用量
 
-DeepSeek Harness 页面只读扫描本地 `session.jsonl.zstd`，按会话、推理步骤和模型聚合 usage。流式 usage 会被同一步骤的最终 usage 替换，推理 token 作为输出子项单列，不重复计入总 token。
+DeepSeek Harness 页面只读扫描桌面版 / CLI 共用的本地会话日志，包括旧版 `session.jsonl.zstd` 和新版 `session.v1` 至 `session.v4.jsonl.zstd`（也支持未压缩 `.jsonl`）。同一会话迁移后留下的旧格式不重复计数。按会话、推理步骤和模型聚合 usage，流式 usage 会被同一步骤的最终 usage 替换，推理 token 作为输出子项单列，不重复计入总 token。
 
 ![DeepSeek Harness 本地用量](docs/assets/deepseek-harness-usage.png)
 
@@ -46,9 +46,11 @@ Grok Build 页面读取官方 CLI 会话中的 `turn_completed.usage`，自动�
 
 ![Grok Build 额度预测](docs/assets/forecast-grok-build.png)
 
-### 数据源显示设置
+### 数据源设置
 
-齿轮按钮可以选择导航、总览和预测页中关注的 Provider。隐藏只改变页面展示，后台全量刷新和历史快照仍会继续维护所有已注册来源。
+齿轮按钮为每个 Provider 提供独立的 **显示** 和 **后台同步** 开关。隐藏只改变页面展示；关闭后台同步则跳过手动全部刷新、每日定时导出、账户额度和 reset 库存请求，但保留已有 Token 和额度历史。卸载 Kimi CLI 或暂时不用某个来源时，可关闭它的后台同步，避免反复提示采集失败。设置在本机持久保存，重新开启后下一次刷新恢复采集。
+
+任一来源暂停时，旧的 `ccusage daily` 全来源导出也会跳过，避免它自行扫描被暂停的来源。总览仍由各 Provider 的本地账本聚合，不受影响。已经开始执行的采集不会被强制中断，设置对后续请求生效。
 
 ![数据源显示设置](docs/assets/provider-settings.png)
 
@@ -139,13 +141,14 @@ Test-Path "$HOME\.local\share\opencode\opencode.db"
 
 若数据库位于自定义目录，可在启动仪表盘前设置 `OPENCODE_DB_PATH`。OpenCode 可以连接多个模型 Provider，因此本项目只汇总本地 token 与费用，不虚构一个跨 Provider 的统一订阅额度窗口。
 
-DeepSeek Harness 默认读取当前机器上的：
+DeepSeek Harness 自动读取桌面版 / CLI 共用的 `DSH_HOME\sessions`。未设置 `DSH_HOME` 时默认使用 `~/.dsh/sessions`；只有这个目录不存在时才兼容旧安装的 `D:\deepseek-harness\.dsh-home\sessions`：
 
 ```powershell
-Test-Path "D:\deepseek-harness\.dsh-home\sessions"
+if ($env:DSH_HOME) { Test-Path (Join-Path $env:DSH_HOME "sessions") }
+else { Test-Path "$HOME\.dsh\sessions" }
 ```
 
-自定义安装可在启动仪表盘或执行导出前设置路径。`DEEPSEEK_HARNESS_SESSION_ROOT` 优先级最高；也可设置 Harness 项目根目录或 home：
+自定义安装可在启动仪表盘或执行导出前设置路径。优先级依次为 `DEEPSEEK_HARNESS_SESSION_ROOT`、`DEEPSEEK_HARNESS_HOME`、`DEEPSEEK_HARNESS_ROOT/.dsh-home`、`DSH_HOME`，最后才是自动探测：
 
 ```powershell
 $env:DEEPSEEK_HARNESS_ROOT = "D:\deepseek-harness"
@@ -153,11 +156,15 @@ $env:DEEPSEEK_HARNESS_HOME = "D:\deepseek-harness\.dsh-home"
 $env:DEEPSEEK_HARNESS_SESSION_ROOT = "D:\deepseek-harness\.dsh-home\sessions"
 ```
 
-默认只统计路由标识为 `deepseek` 或 `deepseek-official` 的调用，避免把 Harness 中转到其他厂商的模型误记为 DeepSeek。确有自定义 DeepSeek 路由时，可用逗号分隔覆盖：
+默认统计路由标识为 `deepseek`、`deepseek-official` 或桌面版账号登录使用的 `deepseek-account` 的调用，也自动纳入其他路由下模型名以 `deepseek-`（或 `deepseek_`、`deepseek/`、`deepseek.`）开头的 DeepSeek 模型，避免漏掉自定义网关。不会把其他厂商的模型自动归入 DeepSeek。需要严格按路由筛选时，可用逗号分隔覆盖（设置后不再自动扩展模型名匹配，要列出所有希望统计的路由）：
 
 ```powershell
-$env:DEEPSEEK_HARNESS_PROVIDER_IDS = "deepseek,deepseek-official,my-deepseek-gateway"
+$env:DEEPSEEK_HARNESS_PROVIDER_IDS = "deepseek,deepseek-official,deepseek-account,my-deepseek-gateway"
 ```
+
+桌面版本地 HTTP 服务需要认证，端口也不作为稳定的用量接口。本项目直接读取它写入的持久化计量事件，不复制登录凭证，不需要手填端口；关闭桌面版后仍能统计已经落盘的 usage。安装目录（例如 `D:\dsh`）与数据目录（`DSH_HOME`）不是一回事。
+
+清理旧源码 / Web 安装前，先确认 `DSH_HOME` 是否仍指向旧目录中的 `.dsh-home`。如果是，不能直接删除整个旧目录：其中可能包含账户凭证、会话、桌面 profile、自定义插件、skills 和附件。切换桌面版不等于自动迁移这些数据。应先保留 / 备份整个 home，并检查插件路径依赖；需要迁移 home 时还应更新 `DSH_HOME` 与配置中的绝对路径，重启桌面版及仪表盘后再验证。
 
 Grok Build 默认读取官方 CLI 的 `~/.grok/sessions/**/updates.jsonl`。先运行一次 Grok Build 并完成至少一个 turn：
 
@@ -242,10 +249,12 @@ flowchart LR
 
 点击顶部刷新或“全部导出”时，系统固定按以下顺序执行：
 
-1. 从后端注册表读取所有 `ccusage` 来源并导出当日 JSON。
+1. 从后端注册表读取已启用后台同步的 `ccusage` 来源并更新滚动 JSON。
 2. 同步 Codex、Claude Code、Cursor、Kimi Code 的账户额度与本地事件来源，并导出 OpenCode、DeepSeek Harness 与 Grok Build 本地用量。
 3. 记录去重后的分段观测点。
 4. 重新读取当前页面；不管停留在哪个标签页，看到的都是同一轮数据。
+
+暂停的来源不采集，只保留历史。状态栏区分真正失败与部分字段缺失：例如 Cursor 401 会提示重新登录或暂停；Grok 返回账期但未返回百分比时会提示部分数据待补齐，不以“全部成功”掩盖缺项。
 
 ## 页面说明
 
@@ -261,7 +270,7 @@ flowchart LR
 | `OpenCode` | OpenCode assistant 消息的本地 token、费用和 `provider/model` 分布；不生成不存在的统一额度预测。 |
 | `DeepSeek Harness` | Harness 会话中实际路由到 DeepSeek 的逐日 token、缓存、输出、推理与模型分布；不读取正文，也不虚构账户额度。 |
 | `Grok Build` | Grok Build 完成 turn 的逐日 token、缓存、输出、推理、费用与模型分布，以及共享周额度和 banked reset 到期时间。 |
-| `齿轮` | 选择显示在导航、总览和预测中的 Provider；至少保留一个，设置保存在本地。 |
+| `齿轮` | 分别控制 Provider 的显示和后台同步；显示至少保留一个，同步可以全部暂停，历史不删除。 |
 | `数据源` | 日志目录、检测状态、每日快照和额度观测点数量。 |
 
 页面首次打开只读取已有 JSON，不会自动执行 `npx`。需要最新数据时再点右上角刷新，避免每次打开浏览器都触发导出。
@@ -277,12 +286,18 @@ flowchart LR
 | Cursor | 最近 90 天 Cursor usage events 聚合 | Cursor usage summary | Cursor 账期、Included in Pro、Auto + Composer、API |
 | Kimi | CLI `~/.kimi-code/sessions/**/wire.jsonl` + 桌面应用嵌入式 Kimi Code `sessions/**/wire.jsonl` | Kimi 会员 subscription stats + Kimi Code managed usage | 会员月总额及 Kimi / Code 构成、周额度与各自重置时间 |
 | OpenCode | `~/.local/share/opencode/opencode.db` 中的 assistant token 字段 | 无统一账户口径 | 不生成额度窗口 |
-| DeepSeek Harness | `.dsh-home/sessions/**/session.jsonl.zstd` 中的 usage 事件 | 未发现可验证的本机统一额度接口 | 不生成额度窗口 |
+| DeepSeek Harness | `DSH_HOME/sessions/**/session[.v1-v4].jsonl[.zstd]` 中的 usage 事件 | 尚未接入账户限额接口 | 不生成额度窗口 |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` 中的 `turn_completed.usage` | 官方 CLI `_x.ai/billing` + Grok Web 只读 reset RPC | Grok 共享周池、重置时间、预付余额、banked reset |
 
 ### Codex
 
 Codex 的额度来自本机 CLI 的 app-server，因此不会把 Codex 登录 token 返回给浏览器。页面还会读取 reset credits 的数量和有效期，但只展示汇总字段。
+
+**本机 Token 与官方个人资料不是同一个数据来源。** 本机明细来自 `ccusage codex daily` 对保留下来的 JSONL 日志的统计；官方个人资料来自服务端 `account/usage/read`。同步 Codex 额度时，后端同时只读查询该接口，保存脱敏的账户累计、单日峰值和每日桶。Codex 页“本机累计 Token”卡片下方并列显示“官方账户”累计及数据截至日期，不合并到本地总数、不写进模型拟合，也不把官方每日桶的日期重新解释成本地时区。
+
+Codex 趋势图可切换「本机 Codex 日志」和「官方账户活动」，两者共用折线、热力图和时间范围控件。下方可选日期核对；无本地记录、官方未返回的日期与已记录的零用量分别显示。官方每日桶不包含模型及费用明细，因此该视图不推算费用；模型分布、Token 构成与每日明细始终来自本地日志。
+
+接口缺失、旧 CLI 不支持或读取超时时，保留上次成功获取的官方数据及原始时间，并标记为历史缓存；没有缓存则显示暂无数据，不影响已取得的额度和本地历史。账户累计不等于订阅额度或 API 账单；不能用差额为本地账本补一笔 Token。[OpenAI app-server 文档](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt)说明了该只读接口的累计与每日桶字段。排查实例见 [Codex 用量对照](docs/codex-usage-reconciliation.md)。
 
 ### Claude Code
 
@@ -321,6 +336,17 @@ banked reset 通过 Grok Web 自身的 `ConsumerUiSvc/GetRemainingResets` 只读
 持久化结果只含日期、模型、usage 数字、额度百分比和 reset 到期时间，不含 prompt ID、reset token ID、会话 ID、工作目录、对话正文或凭证。
 
 ## 额度预测：原始 Token、模型等效 Token 与重置
+
+### Codex 自动审批与免费额度
+
+使用 ChatGPT 账号登录时，Auto-review 安全审批免费，不占用套餐额度。[OpenAI 官方说明](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan)已明确这一点；日志里有审批 Token 不代表发生了订阅扣减。此前将自动审批额外调用直接描述为额度消耗并不准确。
+
+本地日志的模型别名是 `codex-auto-review`。`ccusage` 会把它映射到 `gpt-5.6-luna` 作估算，这不是用户主动选择 Luna，也不是已确认的实际后台模型。本项目会只读核对本机 Guardian 审批日志，按时区及导出截至时间匹配各 Token 分项，在模型分布和每日明细中显示为 **自动审批（gpt-5.6-luna 估算）**。真正的 Luna 任务保留原名；找不到匹配日志时不靠 `isFallback` 标记猜测来源。
+
+- 本地累计、日期趋势及 API 参考费用保留原始统计。审批日志不删除，也不把真实 Token 改成零；API 参考费用不是用户账单，包含免费审批的估算值。
+- 已确认 ChatGPT 登录的审批 Token，从预测的日均速率、模型等效 Token 和新额度观测中剔除。API Key 或未知登录方式不假定享有该免费政策。
+- 新观测记录 `usageBasis`。口径变更单独分段，不会误报为兑换了 reset，也不会把新旧计数器直接相减。历史文件和观测不删除；无审批混入的旧区间仍可复用，来源不明的 Luna 旧区间保留但不参与当前免费政策的拟合。样本不足时继续显示实际官方余额，等待有效样本。
+- 免费政策的历史生效边界和 API Key 计费不能仅凭当前帮助页推断。本项目不倒推过去的真实扣费，也不会宣称官方账户累计必须剔除审批 Token。
 
 ### 为什么不直接按 API 价格换算？
 
@@ -463,7 +489,7 @@ quota: {
 
 如果协议完全不同，只需在 `scripts/sync-account-quotas.mjs` 的后端 adapter map 新增采集函数，再在注册表引用它；无需增加新的用量页前端分支。OpenCode 和 DeepSeek Harness 是 `forecast: false`、`quota: null` 的纯本地用量模板示例；Grok Build 则示范同一 Provider 同时返回本地 usage 与在线 quota。注册表返回给浏览器的对象由 `publicProvider()` 白名单生成，不含凭证路径、接口地址、命令参数、窗口模板或 adapter 名称。
 
-Provider 数量增加后不需要删注册项。页面齿轮中的显示设置会把隐藏选择写入 `usage-logs/display-settings.json`；未显示的 Provider 仍参与全量导出，重新勾选后历史立即可见。以后新注册的 Provider 默认自动显示，再由用户决定是否隐藏。
+Provider 数量增加后不需要删注册项。页面齿轮把显示选择与 `disabledSyncProviders` 一起写入 `usage-logs/display-settings.json`，不新增散乱的配置文件；未显示但未暂停的 Provider 仍参与全量导出，重新勾选后历史立即可见。以后新注册的 Provider 默认显示并同步，再由用户选择。
 
 支持 banked reset 的 Provider 还可以在后端注册表增加规划策略，前端不增加配置表单：
 
@@ -483,13 +509,13 @@ resetPlanning: {
 默认建议每天中午 12:00 导出，避开晚间关机。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-task.ps1 -At 12:00 -Timezone Asia/Tokyo
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-task.ps1 -At 12:00
 ```
 
 如果已有任务需要覆盖：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-task.ps1 -At 12:00 -Timezone Asia/Tokyo -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-task.ps1 -At 12:00 -Force
 ```
 
 旧版用户若机器上已有 `CodexUsageDailyExport`，可以原地替换为全量同步任务：
@@ -498,7 +524,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-tas
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-daily-task.ps1 `
   -TaskName CodexUsageDailyExport `
   -At 12:00 `
-  -Timezone Asia/Tokyo `
   -Force
 ```
 
@@ -546,11 +571,19 @@ npm run export:grok-build
 npm start
 ```
 
-默认 `ccusage` 导出时区是 `Asia/Tokyo`。如果希望改为上海时区：
+默认 `ccusage` 导出时区跟随本机系统时区（由 Node 的 `Intl` 读取，例如中国大陆的 `Asia/Shanghai`），同时将实际时区写进汇总文件。浏览器刷新、手动导出和未指定时区的每日任务使用相同规则。需要固定为其他时区时仍可显式设置：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\export-all-daily.ps1 -Timezone Asia/Shanghai
 ```
+
+旧版未标明时区的文件无法仅凭每日汇总重新分日。确认旧文件使用东京时区后，可针对相应来源进行一次迁移：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\export-daily.ps1 -Source codex -LegacyTimezone Asia/Tokyo
+```
+
+迁移会按本机时区重新读取仍存在的原始日志，将旧时区完整汇总保存在同一 JSON 的 `timezoneHistory` 中，不删除它，也不将其重复计入新汇总。若部分原始日志已删除，新时区主账本不能重建那部分日分布，旧汇总仍可供核对。旧计划任务若显式指定了东京时区，也需移除该参数或替换为期望时区；仅改导出脚本的默认值不会覆盖显式参数。
 
 ## 本地文件与存储控制
 
@@ -564,7 +597,7 @@ usage-logs/
 ├─ deepseek-harness/daily/deepseek-harness-usage.json # Harness 完整每日历史滚动文件
 ├─ grok-build/daily/grok-build-usage.json # Grok Build 完整每日历史滚动文件
 ├─ all/daily/all-usage.json           # all-agent 完整每日历史滚动文件
-├─ display-settings.json        # 本地 Provider 显示选择
+├─ display-settings.json        # Provider 显示与后台同步开关
 ├─ forecast-settings.json       # 预测页本地设置
 ├─ quota-snapshots/             # 每来源一个额度文件，内含最新值和每日历史
 ├─ quota-observations/          # 每来源一个观测文件，内含 120 天重置分段历史
@@ -667,11 +700,12 @@ npm run export:opencode
 
 ```powershell
 node --version
-Test-Path "D:\deepseek-harness\.dsh-home\sessions"
+if ($env:DSH_HOME) { Test-Path (Join-Path $env:DSH_HOME "sessions") }
+else { Test-Path "$HOME\.dsh\sessions" }
 npm run export:deepseek-harness
 ```
 
-要求 Node.js `>=22.15`。输出文件是 `usage-logs\deepseek-harness\daily\deepseek-harness-usage.json`。如果 Harness 使用自定义 home，请先设置 `DEEPSEEK_HARNESS_HOME` 或 `DEEPSEEK_HARNESS_SESSION_ROOT`；如果使用自定义 DeepSeek 路由名，再设置 `DEEPSEEK_HARNESS_PROVIDER_IDS`。顶部刷新与每日定时任务都会调用同一采集器。
+要求 Node.js `>=22.15`。输出文件是 `usage-logs\deepseek-harness\daily\deepseek-harness-usage.json`，重复刷新替换同一天统计，不增加重复快照。桌面版的 `session.v4.jsonl.zstd` 与 `deepseek-account` 路由已支持；如果 Harness 使用自定义 home，优先复用其 `DSH_HOME`，或显式设置 `DEEPSEEK_HARNESS_HOME` / `DEEPSEEK_HARNESS_SESSION_ROOT`。如果使用自定义 DeepSeek 路由名，再设置 `DEEPSEEK_HARNESS_PROVIDER_IDS`。顶部刷新与每日定时任务都会调用同一采集器。路径环境变量改动后需要重启仪表盘。
 
 ### Grok Build 今天的 token 没出现
 
@@ -684,6 +718,8 @@ npm run export:grok-build
 ```
 
 输出文件是 `usage-logs\grok-build\daily\grok-build-usage.json`。采集器只统计已落盘的 `turn_completed`；正在运行且尚未完成的 turn 会在结束后的下一次刷新中出现。额度读取还要求本机 Grok CLI 已登录；若周额度同步提示凭证问题，请先运行 `grok login`。顶部刷新、全部导出与每日定时任务都会同步 token、周额度与 banked reset。
+
+新版 CLI 的套餐字段 `subscription_tier` 与旧 `subscriptionTier` 均可读取。若接口返回账期但没有 `creditUsagePercent`，仍保存正确账期、本地 Token 和 reset 库存，同时明确提示百分比缺失；额度显示为未知，不伪造 0% / 100%，不写入拟合观测点，暂不生成耗尽预测。等官方接口恢复该字段后，下一次刷新自动恢复。
 
 ### 端口 8787 被占用
 

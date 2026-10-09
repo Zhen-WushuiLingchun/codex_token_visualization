@@ -8,10 +8,11 @@ const {
   ALL_SOURCES,
   publicProvider,
 } = require("./providers/registry.js");
-const { readDisplaySettings, writeDisplaySettings } = require("./lib/display-settings.js");
+const { readDisplaySettings, writeDisplaySettings, sourceSyncEnabled } = require("./lib/display-settings.js");
 const { checkForUpdate } = require("./lib/update-check.js");
 const { useSystemCertificates, networkErrorMessage } = require("./lib/network.js");
 const { summarizeRefreshResults } = require("./lib/refresh-results.js");
+const { enrichCodexUsage } = require("./lib/codex-auto-review.js");
 useSystemCertificates();
 
 const ROOT = __dirname;
@@ -38,6 +39,7 @@ const SOURCE_CONFIGS = Object.fromEntries(
   }])
 );
 const EXPORT_SEQUENCE = ALL_SOURCES.filter((entry) => entry.usage.adapter === "ccusage").map((entry) => entry.id);
+const syncEnabled = (source) => sourceSyncEnabled(DISPLAY_SETTINGS_PATH, PROVIDERS, source);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -303,6 +305,10 @@ const resetCreditsInFlight = new Map();
 
 async function readResetCredits(provider, force = false) {
   const source = provider.id;
+  if (!syncEnabled(source)) {
+    return { ok: true, source, source_label: provider.label, paused: true, available_count: null,
+      credits: [], message: "后台同步已暂停" };
+  }
   const cached = resetCreditsCache.get(source);
   if (!force && cached && Date.now() - cached.at < 30000) return cached.payload;
   if (resetCreditsInFlight.has(source)) return resetCreditsInFlight.get(source);
@@ -498,7 +504,9 @@ function latestUsageSnapshot(source = "codex") {
 
   const latest = files[0];
   const raw = fs.readFileSync(latest.path, "utf8").replace(/^\uFEFF/, "");
-  const parsed = JSON.parse(raw);
+  const original = JSON.parse(raw);
+  const parsed = normalizedSource === "codex"
+    ? enrichCodexUsage(original, { cutoff: latest.mtimeMs }) : original;
 
   return {
     ...base,
@@ -509,8 +517,10 @@ function latestUsageSnapshot(source = "codex") {
       size: latest.size,
     },
     files: files.map(({ mtimeMs, ...file }) => file),
+    timezone: typeof parsed.timezone === "string" ? parsed.timezone : null,
     daily: Array.isArray(parsed.daily) ? parsed.daily : [],
     totals: parsed.totals || {},
+    autoReview: parsed.autoReview || null,
   };
 }
 
@@ -518,6 +528,11 @@ function exportUsageSnapshot(source = "codex") {
   const normalizedSource = normalizeSource(source);
   if (!normalizedSource) {
     return Promise.reject(new Error(`Unknown source: ${source}`));
+  }
+
+  if (!syncEnabled(normalizedSource)) {
+    return Promise.resolve({ source: normalizedSource, skipped: true, reason: "background sync disabled",
+      snapshot: latestUsageSnapshot(normalizedSource) });
   }
 
   if (!SOURCE_CONFIGS[normalizedSource].command) {
@@ -584,7 +599,8 @@ async function exportEverything() {
   for (const source of EXPORT_SEQUENCE) {
     try {
       const result = await exportUsageSnapshot(source);
-      results.push({ source, ok: true, stdout: result.stdout, stderr: result.stderr });
+      results.push({ source, ok: true, skipped: result.skipped || false, reason: result.reason,
+        stdout: result.stdout, stderr: result.stderr });
       snapshots[source] = result.snapshot;
     } catch (error) {
       results.push({
@@ -630,6 +646,10 @@ function runExport(req, res) {
         }
         const resetResults = [];
         for (const provider of PROVIDERS.filter((entry) => entry.resetCredits)) {
+          if (!syncEnabled(provider.id)) {
+            resetResults.push({ source: `reset:${provider.id}`, ok: true, skipped: true, reason: "background sync disabled" });
+            continue;
+          }
           const payload = await readResetCredits(provider, true);
           resetResults.push({ source: `reset:${provider.id}`, ok: payload.ok === true,
             error: payload.ok ? null : payload.message || "Reset inventory unavailable" });
@@ -694,6 +714,7 @@ function sourceStatus() {
       quotaObservationCount: quota?.observations.length || 0,
       detected,
       manualOnly: Boolean(config.manualOnly),
+      syncEnabled: syncEnabled(source),
     };
   });
 }

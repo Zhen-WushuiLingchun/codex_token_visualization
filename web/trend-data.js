@@ -10,6 +10,15 @@
     return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === key ? time : NaN;
   }
   const key = (time) => new Date(time).toISOString().slice(0, 10);
+  function accountSeries(account) {
+    const records = new Map();
+    for (const row of Array.isArray(account?.daily) ? account.daily : []) {
+      if (Number.isFinite(stamp(row?.date)) && Number.isSafeInteger(row.tokens) && row.tokens >= 0) {
+        records.set(row.date, { date: row.date, totalTokens: row.tokens });
+      }
+    }
+    return [...records.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }
   function select(days, settings, today) {
     const records = new Map();
     for (const day of days) {
@@ -50,5 +59,5 @@
     if (!(value > 0)) return "0";
     return String(Math.min(4, Math.max(1, Math.ceil(value / max * 4))));
   }
-  return { select, level };
+  return { select, level, accountSeries };
 });

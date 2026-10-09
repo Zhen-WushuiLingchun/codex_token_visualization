@@ -124,6 +124,10 @@
               <div class="pill" id="rangePill">--</div>
             </div>
             <div class="trend-controls">
+              <select id="trendScope" aria-label="趋势统计口径" hidden>
+                <option value="local">本机 Codex 日志</option>
+                <option value="account">官方账户活动</option>
+              </select>
               <div class="trend-modes" role="group" aria-label="趋势图类型">
                 <button type="button" data-trend-mode="line" aria-pressed="true">折线</button>
                 <button type="button" data-trend-mode="heatmap" aria-pressed="false">热力图</button>
@@ -140,6 +144,14 @@
             </div>
             <p id="trendSummary" class="trend-summary" aria-live="polite"></p>
             <div class="chart-wrap" id="trendChart"></div>
+            <div id="accountComparison" class="account-comparison" hidden>
+              <label>日期 <input id="accountComparisonDate" type="date" aria-label="用量对照日期"></label>
+              <dl>
+                <div><dt>官方账户活动</dt><dd id="accountDayTokens">--</dd></div>
+                <div><dt>本机 Codex 日志</dt><dd id="localDayTokens">--</dd></div>
+              </dl>
+              <p id="accountCoverage" class="trend-summary"></p>
+            </div>
           </article>
 
           <article class="panel split-panel">
@@ -228,8 +240,8 @@
       <form class="settings-sheet" method="dialog">
         <div class="settings-heading">
           <div>
-            <p class="section-label">Display</p>
-            <h2 id="displaySettingsTitle">数据源显示</h2>
+            <p class="section-label">Sources</p>
+            <h2 id="displaySettingsTitle">数据源设置</h2>
           </div>
           <button class="settings-close" id="displaySettingsClose" type="button" title="关闭" aria-label="关闭">×</button>
         </div>
@@ -239,7 +251,7 @@
           <button class="secondary-button" id="displaySettingsAll" type="button">全部显示</button>
           <span class="settings-action-spacer"></span>
           <button class="secondary-button" id="displaySettingsCancel" type="button">取消</button>
-          <button class="primary-button" id="displaySettingsSave" type="button">保存显示</button>
+          <button class="primary-button" id="displaySettingsSave" type="button">保存设置</button>
         </div>
       </form>
     </dialog>

@@ -28,6 +28,25 @@
     return String(day?.date ?? day?.period ?? "").slice(0, 10);
   }
 
+  function quotaUsageDay(day) {
+    const models = day?.models && !Array.isArray(day.models) ? Object.entries(day.models) : null;
+    const breakdowns = models ? models.map(([modelName, usage]) => ({ ...usage, modelName })) : day?.modelBreakdowns || [];
+    const exempt = breakdowns.filter((usage) => usage.usageRole === "auto-review" && usage.planQuotaExempt === true);
+    if (!exempt.length) return day;
+    const removed = exempt.reduce((sum, usage) => sum + usageTotal(usage), 0);
+    const result = { ...day, totalTokens: Math.max(0, numberOrZero(day.totalTokens) - removed) };
+    if (models) result.models = Object.fromEntries(models.filter(([, usage]) => !(usage.usageRole === "auto-review" && usage.planQuotaExempt === true)));
+    if (Array.isArray(day.modelBreakdowns)) result.modelBreakdowns = day.modelBreakdowns.filter((usage) => !(usage.usageRole === "auto-review" && usage.planQuotaExempt === true));
+    return result;
+  }
+
+  function quotaObservationsForBasis(points, basis) {
+    if (basis !== "codex-chatgpt-auto-review-excluded-v1") return points;
+    return points.filter((point) => point.usageBasis === basis
+      || ((point.usageBasis || "local-token-v1") === "local-token-v1"
+        && !Object.keys(point.models || {}).some((name) => name === "gpt-5.6-luna" || name.startsWith("codex-auto-review"))));
+  }
+
   function dayModelTokens(day) {
     const totals = new Map();
     if (day?.models && typeof day.models === "object" && !Array.isArray(day.models)) {
@@ -600,6 +619,8 @@
 
   return {
     OTHER_MODEL,
+    quotaUsageDay,
+    quotaObservationsForBasis,
     dayModelTokens,
     fitModelWeights,
     equivalentTokensForDay,

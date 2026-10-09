@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import codexAutoReview from "../lib/codex-auto-review.js";
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
@@ -62,8 +63,27 @@ function normalizeUsageDate(value) {
 
 export function mergeUsageSnapshotHistory(snapshots, current) {
   const priorSnapshots = Array.isArray(snapshots) ? snapshots.filter(Boolean) : [];
+  const timezoneHistory = new Map();
+  for (const snapshot of priorSnapshots) {
+    for (const archived of snapshot.timezoneHistory || []) timezoneHistory.set(archived.timezone, archived);
+  }
+  // Date-only aggregates cannot be rebinned. Rebuild from raw logs and retain
+  // the old timezone ledger separately, rather than adding overlapping days.
+  const incompatible = new Map();
+  for (const snapshot of priorSnapshots) {
+    if (current?.timezone && snapshot.timezone && current.timezone !== snapshot.timezone) {
+      const group = incompatible.get(snapshot.timezone) || [];
+      group.push(snapshot);
+      incompatible.set(snapshot.timezone, group);
+    }
+  }
+  for (const [timezone, group] of incompatible) {
+    const archived = mergeUsageSnapshotHistory(group, null);
+    timezoneHistory.set(timezone, { timezone, daily: archived.daily, totals: archived.totals });
+  }
+  const compatible = priorSnapshots.filter(snapshot => !current?.timezone || !snapshot.timezone || snapshot.timezone === current.timezone);
   const byDate = new Map();
-  for (const snapshot of [...priorSnapshots, current].filter(Boolean)) {
+  for (const snapshot of [...compatible, current].filter(Boolean)) {
     for (const day of Array.isArray(snapshot?.daily) ? snapshot.daily : []) {
       const dateField = day?.date ? "date" : day?.period ? "period" : null;
       const dateKey = normalizeUsageDate(dateField ? day[dateField] : null);
@@ -75,10 +95,11 @@ export function mergeUsageSnapshotHistory(snapshots, current) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([, day]) => day);
   const merged = {
-    ...(current || priorSnapshots.at(-1) || {}),
+    ...(current || compatible.at(-1) || {}),
     daily,
-    totals: recomputeTotals(daily, priorSnapshots, current),
+    totals: recomputeTotals(daily, compatible, current),
   };
+  if (timezoneHistory.size) merged.timezoneHistory = [...timezoneHistory.values()];
   if (Object.hasOwn(merged, "rangeDays")) merged.rangeDays = daily.length;
   return merged;
 }
@@ -93,7 +114,7 @@ function removeDatedSnapshots(roots, prefix) {
   }
 }
 
-export function writeConsolidatedUsageSnapshot({ output, prefix, roots, incoming }) {
+export function writeConsolidatedUsageSnapshot({ output, prefix, roots, incoming, legacyTimezone = null }) {
   const normalizedRoots = [...new Set((roots || []).filter(Boolean).map((root) => resolve(root)))];
   const outputPath = resolve(output);
   const priorFiles = normalizedRoots
@@ -103,7 +124,11 @@ export function writeConsolidatedUsageSnapshot({ output, prefix, roots, incoming
     .filter((filePath, index, files) => files.indexOf(filePath) === index && resolve(filePath) !== outputPath);
   if (existsSync(outputPath)) priorFiles.push(outputPath);
   const snapshots = priorFiles.map((filePath) => readJson(filePath));
-  const current = typeof incoming === "string" ? readJson(incoming) : incoming;
+  if (legacyTimezone) for (const snapshot of snapshots) snapshot.timezone ||= legacyTimezone;
+  const original = typeof incoming === "string" ? readJson(incoming) : incoming;
+  const current = prefix === "codex-usage" ? codexAutoReview.enrichCodexUsage(original, {
+    cutoff: typeof incoming === "string" ? statSync(incoming).mtimeMs : Date.now(),
+  }) : original;
   const merged = mergeUsageSnapshotHistory(snapshots, current);
   writeJsonAtomic(outputPath, merged);
   removeDatedSnapshots(normalizedRoots, prefix);
@@ -131,7 +156,7 @@ function main() {
   if (!output || !prefix || !incoming || !roots.length) {
     throw new Error("Usage: usage-storage.mjs --output FILE --prefix PREFIX --incoming FILE --root DIR [--root DIR]");
   }
-  const merged = writeConsolidatedUsageSnapshot({ output, prefix, incoming, roots });
+  const merged = writeConsolidatedUsageSnapshot({ output, prefix, incoming, roots, legacyTimezone: argumentValue("--legacy-timezone") });
   process.stdout.write(`${JSON.stringify({ ok: true, output: resolve(output), dailyCount: merged.daily.length })}\n`);
 }
 
