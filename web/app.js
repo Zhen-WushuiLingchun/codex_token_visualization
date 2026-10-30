@@ -1197,7 +1197,7 @@ function renderForecast(agent = forecastAgent) {
         : `${fit?.totalSegmentCount || 0} 个分段 · 当前 ${fit?.currentSegmentPoints || fit?.sampleCount || 0} 个观测点`
     );
     els.forecastSourcePill.textContent = forecast.quotaData?.latest
-      ? `账户快照 · ${forecast.quotaData.latest.file?.name || "最新"}${fit?.historicalMode ? ` · 跨周期${fit.model ? "拟合" : "采样"}` : ""}${forecast.modelFit?.active ? " · 模型校正" : ""}${forecast.plan.capacityPlan?.changes?.length ? ` · ${globalThis.PlanCapacity.multiplierAt(forecast.plan.capacityPlan, Date.now())}x 容量` : ""}`
+      ? `账户快照 · ${forecast.quotaData.latest.file?.name || "最新"}${fit?.historicalMode ? ` · 跨周期${fit.model ? "拟合" : "采样"}` : ""}${forecast.modelFit?.active ? " · 模型校正" : ""}${forecast.plan.capacityPlan?.changes?.length ? ` · ${globalThis.PlanCapacity.multiplierAt(forecast.plan.capacityPlan, Date.now())}x 历史标尺` : ""}`
       : "未发现账户快照";
     renderForecastRunway(forecast);
     renderForecastRates(forecast);

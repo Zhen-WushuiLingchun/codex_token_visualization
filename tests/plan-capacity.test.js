@@ -147,3 +147,36 @@ test("new capacity traffic cannot invalidate evidence of exhaustion in the old c
   assert.equal(separated.demand.nonBindingCycles, 0);
   assert.ok(separated.demand.removedHours >= 1);
 });
+
+const octoberExpansion = { ...upgrade, changes: [...upgrade.changes,
+  { effectiveAt: "2026-10-30T04:01:19.119Z", multiplier: 20 }] };
+
+test("a second expansion reuses 5x and 10x history on a 20x historical scale", () => {
+  const raw = [interval("02", 1e6, 20), interval("20", 1e6, 10),
+    { ...interval("30", 1e6, 5), startedAt: "2026-10-30T05:00:00Z", endedAt: "2026-10-30T06:00:00Z" }];
+  const result = Capacity.normalizeIntervals(raw, octoberExpansion, "2026-10-30T07:00:00Z");
+  assert.deepEqual(result.intervals.map(x => x.deltaPercent), [5, 5, 5]);
+  assert.deepEqual(result.intervals.map(x => x.rawDeltaPercent), [20, 10, 5]);
+  assert.deepEqual(result.intervals.map(x => x.deltaTokens), [1e6, 1e6, 1e6]);
+  assert.equal(result.convertedCount, 2);
+});
+
+test("configured expansion is not a redeemed reset; real reset clock changes still take precedence", async () => {
+  const { detectObservationSegment } = await import("../scripts/sync-account-quotas.mjs");
+  const prior = { fetchedAt: "2026-10-29T16:08:46.418Z", usedPercent: 78, totalTokens: 1e9,
+    windowName: "primary", resetAt: "2026-11-04T08:38:29Z" };
+  const current = { ...prior, fetchedAt: "2026-10-30T04:01:19.119Z", usedPercent: 42, totalTokens: 1.1e9 };
+  assert.deepEqual(detectObservationSegment(prior, current, octoberExpansion),
+    { newSegment: true, resetDetected: false, reason: "capacity-changed" });
+  assert.equal(detectObservationSegment(prior, current, upgrade).reason, "quota-percent-dropped");
+  assert.equal(detectObservationSegment(prior, { ...current, resetAt: "2026-11-06T04:00:00Z" }, octoberExpansion).reason,
+    "reset-time-changed");
+  const raw = [{ ...prior, segment: 57 }, { ...current, segment: 58,
+    resetDetected: true, resetReason: "quota-percent-dropped" }];
+  const view = Capacity.observationEras(raw, octoberExpansion);
+  assert.equal(view[1].resetDetected, false);
+  assert.equal(view[1].resetReason, "capacity-changed");
+  assert.equal(view[1].usedPercent, 42);
+  assert.equal(raw[1].resetDetected, true);
+  assert.equal(raw[1].resetReason, "quota-percent-dropped");
+});

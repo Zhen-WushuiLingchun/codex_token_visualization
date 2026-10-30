@@ -499,7 +499,12 @@ main {
 .capacity-settings-body {
   padding: 18px 22px 0;
   overflow-y: auto;
-  max-height: min(430px, calc(100dvh - 240px));
+  max-height: min(560px, calc(100dvh - 240px));
+}
+
+#capacitySettingsForm {
+  max-height: min(718px, calc(100dvh - 30px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .capacity-field {

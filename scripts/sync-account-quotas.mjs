@@ -12,6 +12,7 @@ import network from "../lib/network.js";
 import displaySettings from "../lib/display-settings.js";
 import codexAutoReview from "../lib/codex-auto-review.js";
 import forecastModel from "../web/forecast-model.js";
+import planCapacity from "../web/plan-capacity.js";
 network.useSystemCertificates();
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -2368,7 +2369,7 @@ function observationWindows(snapshot) {
     .sort((a, b) => (Number(b?.windowDurationMins) || 0) - (Number(a?.windowDurationMins) || 0));
 }
 
-export function detectObservationSegment(prior, current) {
+export function detectObservationSegment(prior, current, capacityPlan = null) {
   if (!prior) return { newSegment: true, resetDetected: false, reason: "first-observation" };
   if ((prior.usageBasis || "local-token-v1") !== (current.usageBasis || "local-token-v1")) {
     return { newSegment: true, resetDetected: false, reason: "usage-basis-changed" };
@@ -2387,6 +2388,11 @@ export function detectObservationSegment(prior, current) {
       : Math.abs(priorReset - currentReset) > 5 * 60 * 1000);
   if (resetMissingChanged || resetTimeChanged) {
     return { newSegment: true, resetDetected: true, reason: "reset-time-changed" };
+  }
+  if (capacityPlan && prior.fetchedAt && current.fetchedAt
+    && Number.isFinite(Date.parse(prior.fetchedAt)) && Number.isFinite(Date.parse(current.fetchedAt))
+    && planCapacity.crossesChange(planCapacity.normalizePlan(capacityPlan), prior.fetchedAt, current.fetchedAt)) {
+    return { newSegment: true, resetDetected: false, reason: "capacity-changed" };
   }
   if (Number(current.usedPercent) + 0.5 < Number(prior.usedPercent)) {
     return { newSegment: true, resetDetected: true, reason: "quota-percent-dropped" };
@@ -2452,7 +2458,7 @@ export function shouldRecordQuotaObservation(prior, current, fetchedAt) {
   return quotaMoved || exhaustedChanged || (elapsedMinutes >= 15 && (usageMoved || Number(current.usedPercent) === 100));
 }
 
-function writeQuotaObservation(snapshot, usageAggregate) {
+function writeQuotaObservation(snapshot, usageAggregate, capacityPlan = null) {
   const source = snapshot.source;
   const history = allObservations(source);
   const filesBeforeWrite = observationFiles(source);
@@ -2475,12 +2481,13 @@ function writeQuotaObservation(snapshot, usageAggregate) {
     const windowUsage = quotaWindowUsageAggregate(window, usageAggregate);
     const totalTokens = windowUsage.totalTokens;
     const segmentDecision = detectObservationSegment(prior, {
+      fetchedAt,
       windowName,
       resetAt: window.resetsAt || null,
       usedPercent,
       totalTokens,
       usageBasis: usageAggregate?.usageBasis || "local-token-v1",
-    });
+    }, capacityPlan);
     const newSegment = segmentDecision.newSegment;
     const segment = newSegment ? Number(prior?.segment || 0) + 1 : Number(prior.segment || 1);
     if (!newSegment && !shouldRecordQuotaObservation(prior, { usedPercent, totalTokens }, fetchedAt)) continue;
@@ -2718,7 +2725,8 @@ async function main() {
         continue;
       }
       const filePath = writeSnapshot(snapshot);
-      const observation = writeQuotaObservation(snapshot, currentUsageAggregate(source, loaded?.usage));
+      const observation = writeQuotaObservation(snapshot, currentUsageAggregate(source, loaded?.usage),
+        settings?.agents?.[source]?.capacityPlan);
       results.push({
         source,
         kind: "quota",

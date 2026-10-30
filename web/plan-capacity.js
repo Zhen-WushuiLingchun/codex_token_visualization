@@ -57,6 +57,7 @@
   function observationEras(points, planValue) {
     const plan = normalizePlan(planValue);
     if (!plan.changes.length) return points;
+    const previousByWindow = new Map();
     return (points || []).map((point) => {
       const time = Date.parse(point.fetchedAt);
       if (!Number.isFinite(time)) return point;
@@ -67,7 +68,13 @@
         if (entry.multiplier !== previous) era += 1;
         previous = entry.multiplier;
       }
-      return { ...point, capacityEra: era, segment: `capacity:${era}:segment:${point.segment ?? "unknown"}` };
+      const prior = previousByWindow.get(point.windowName);
+      previousByWindow.set(point.windowName, point);
+      const capacityDrop = prior && point.resetReason === "quota-percent-dropped"
+        && Math.abs(Date.parse(prior.resetAt) - Date.parse(point.resetAt)) <= 300000
+        && crossesChange(plan, prior.fetchedAt, point.fetchedAt);
+      return { ...point, ...(capacityDrop ? { resetDetected: false, resetReason: "capacity-changed" } : {}),
+        capacityEra: era, segment: `capacity:${era}:segment:${point.segment ?? "unknown"}` };
     });
   }
 
