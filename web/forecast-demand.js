@@ -1,29 +1,15 @@
 (function attachForecastDemand(root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./app-time.js") : root.AppTime);
   if (typeof module === "object" && module.exports) module.exports = api;
   root.ForecastDemand = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function createForecastDemand() {
+})(typeof globalThis !== "undefined" ? globalThis : this, function createForecastDemand(AppTime) {
   "use strict";
   const HOUR = 3600000;
   const MAX_GAP = 6 * HOUR;
   const number = (value) => value === null || value === undefined || value === "" ? null
     : Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
   const timestamp = (value) => value ? Date.parse(value) : NaN;
-  const dateKey = (value) => {
-    const date = new Date(value);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  };
-  function dayStart(key) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(key || "")) return NaN;
-    const [year, month, day] = key.split("-").map(Number);
-    const value = new Date(year, month - 1, day).getTime();
-    return dateKey(value) === key ? value : NaN;
-  }
-  function shiftDay(key, count) {
-    const date = new Date(dayStart(key));
-    date.setDate(date.getDate() + count);
-    return dateKey(date);
-  }
+  const { dateKey, dayStart, shiftDay } = AppTime;
   const sameCycle = (a, b) => Math.abs(a.reset - b.reset) <= 5 * 60000
     && (a.segment == null || b.segment == null || String(a.segment) === String(b.segment));
   const fresh = (point) => Number.isFinite(point.usageAt) && Math.abs(point.time - point.usageAt) <= HOUR;

@@ -1,6 +1,6 @@
 param(
   [string]$Source = "codex",
-  [string]$Timezone,
+  [string]$Timezone = "Asia/Shanghai",
   [string]$LegacyTimezone,
   [string]$OutputRoot,
   [string]$FileDate
@@ -42,10 +42,9 @@ if ($NodeMajor -lt 22) {
   throw "ccusage@latest requires Node.js 22 or newer. Current version: $NodeVersion"
 }
 
-if (-not $Timezone) {
-  $Timezone = (& node -p "Intl.DateTimeFormat().resolvedOptions().timeZone") -join ""
-  if ($LASTEXITCODE -ne 0 -or -not $Timezone) { throw "Could not detect the local timezone" }
-}
+if ($Timezone -and $Timezone -ne "Asia/Shanghai") { Write-Warning "Timezone is fixed to Asia/Shanghai; ignoring $Timezone" }
+$Timezone = "Asia/Shanghai"
+$env:TZ = "Asia/Shanghai"
 
 $OutputFile = Join-Path $DailyRoot "$($Config.filePrefix).json"
 $env:npm_config_cache = $NpmCache

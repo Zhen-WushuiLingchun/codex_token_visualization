@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const AppTime = require("./web/app-time.js");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
@@ -180,21 +181,10 @@ function sendJson(res, status, payload) {
 
 function localDateTime(value) {
   if (!value) return null;
-  const date = new Date(value);
+  const date = AppTime.date(value);
   if (Number.isNaN(date.getTime())) return null;
 
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absOffset = Math.abs(offsetMinutes);
-  const offsetHours = String(Math.floor(absOffset / 60)).padStart(2, "0");
-  const offsetMins = String(absOffset % 60).padStart(2, "0");
-  const pad = (number) => String(number).padStart(2, "0");
-
-  return [
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
-    `GMT${sign}${offsetHours}:${offsetMins}`,
-  ].join(" ");
+  return `${AppTime.input(date).replace("T", " ")} GMT+08:00`;
 }
 
 function readCodexAccessToken() {

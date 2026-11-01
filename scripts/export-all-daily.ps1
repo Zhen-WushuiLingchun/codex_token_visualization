@@ -1,9 +1,12 @@
 param(
-  [string]$Timezone,
+  [string]$Timezone = "Asia/Shanghai",
   [string]$FileDate
 )
 
 $ErrorActionPreference = "Stop"
+if ($Timezone -and $Timezone -ne "Asia/Shanghai") { Write-Warning "Timezone is fixed to Asia/Shanghai; ignoring $Timezone" }
+$Timezone = "Asia/Shanghai"
+$env:TZ = "Asia/Shanghai"
 
 $ExportScript = Join-Path $PSScriptRoot "export-daily.ps1"
 $QuotaScript = Join-Path $PSScriptRoot "sync-account-quotas.mjs"

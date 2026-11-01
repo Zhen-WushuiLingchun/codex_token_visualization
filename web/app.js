@@ -195,9 +195,7 @@ async function loadForecastSettings() {
 }
 
 function localDateTimeInput(value) {
-  const date = new Date(value);
-  const pad = (number) => String(number).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return AppTime.input(value);
 }
 
 function addCapacityChange(entry = {}) {
@@ -205,7 +203,7 @@ function addCapacityChange(entry = {}) {
   row.className = "capacity-change-row";
   const index = els.capacityChanges.childElementCount + 1;
   row.innerHTML = `
-    <label class="capacity-field">生效时间（本地）<input type="datetime-local" step="1" data-capacity="time" required aria-label="生效时间 ${index}" /></label>
+    <label class="capacity-field">生效时间（北京时间）<input type="datetime-local" step="1" data-capacity="time" required aria-label="生效时间 ${index}" /></label>
     <label class="capacity-field">新容量倍数<input type="number" min="0.01" max="1000" step="any" data-capacity="multiplier" required aria-label="新容量倍数 ${index}" /></label>
     <button class="settings-close" type="button" title="删除这条变更" aria-label="删除容量变更 ${index}">×</button>`;
   row.querySelector('[data-capacity="time"]').value = localDateTimeInput(entry.effectiveAt || Date.now());
@@ -244,7 +242,7 @@ async function saveCapacitySettings(event) {
     const capacityPlan = globalThis.PlanCapacity.normalizePlan({
       baselineMultiplier: els.capacityBaseline.value,
       changes: [...els.capacityChanges.children].map((row) => ({
-        effectiveAt: new Date(row.querySelector('[data-capacity="time"]').value).toISOString(),
+        effectiveAt: AppTime.parseInput(row.querySelector('[data-capacity="time"]').value),
         multiplier: row.querySelector('[data-capacity="multiplier"]').value,
       })),
     });
@@ -463,8 +461,7 @@ function formatPercent(value) {
 const FORECAST_AGENT_META = {};
 
 function localDateKey(date = new Date()) {
-  const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return AppTime.dateKey(date);
 }
 
 function dayKey(day) {
@@ -492,9 +489,9 @@ function dayDistance(from, to) {
 
 function formatDateKey(value) {
   if (!value) return "--";
-  const date = new Date(`${value}T12:00:00`);
+  const date = AppTime.date(`${value}T12:00:00`);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+  return AppTime.format(date, { month: "short", day: "numeric" });
 }
 
 function formatRunway(days) {
@@ -961,7 +958,7 @@ function formatAccountTime(value) {
   if (!value) return "--";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return AppTime.format(date, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function formatAccountWindow(windowDurationMins) {
@@ -1845,7 +1842,7 @@ function renderSnapshots(data) {
     row.innerHTML = `
       <div class="snapshot-main">
         <div class="snapshot-name">${index === 0 ? "Latest · " : ""}${escapeHtml(file.name)}</div>
-        <div class="snapshot-date">${new Date(file.modifiedAt).toLocaleString("zh-CN")}</div>
+        <div class="snapshot-date">${AppTime.format(file.modifiedAt)}</div>
       </div>
       <div class="snapshot-meta">${formatBytes(file.size)}</div>
     `;
@@ -2102,7 +2099,7 @@ async function loadForecastView() {
 
 function plannerTime(value) {
   if (!Number.isFinite(Number(value))) return "--";
-  return new Date(Number(value)).toLocaleString("zh-CN", {
+  return AppTime.format(Number(value), {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
   });
 }

@@ -12,6 +12,7 @@ import network from "../lib/network.js";
 import displaySettings from "../lib/display-settings.js";
 import codexAutoReview from "../lib/codex-auto-review.js";
 import forecastModel from "../web/forecast-model.js";
+import AppTime from "../web/app-time.js";
 import planCapacity from "../web/plan-capacity.js";
 network.useSystemCertificates();
 
@@ -32,8 +33,7 @@ const MAX_DAILY_QUOTA_SNAPSHOTS = 180;
 const MAX_QUOTA_OBSERVATIONS = STORAGE_RETENTION_DAYS * 96;
 
 function localDateKey(date = new Date()) {
-  const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return AppTime.dateKey(date);
 }
 
 function readJson(filePath) {
@@ -66,7 +66,7 @@ function openCodeDatabasePath() {
 
 function openCodeDateKey(value) {
   const timestamp = Number(value);
-  const date = Number.isFinite(timestamp) ? new Date(timestamp) : new Date(value);
+  const date = Number.isFinite(timestamp) ? new Date(timestamp) : AppTime.date(value);
   return Number.isNaN(date.getTime()) ? null : localDateKey(date);
 }
 
@@ -177,6 +177,7 @@ export function aggregateOpenCodeUsageRecords(records, generatedAt = new Date().
 
   return {
     source: "opencode",
+    timezone: AppTime.ZONE,
     generatedAt,
     provider: "opencode-sqlite",
     recordCount: records?.length || 0,
@@ -295,7 +296,7 @@ function deepSeekHarnessDate(value, fallback) {
   const candidate = value ?? fallback;
   if (candidate === null || candidate === undefined || candidate === "") return null;
   const timestamp = Number(candidate);
-  const date = Number.isFinite(timestamp) ? new Date(timestamp) : new Date(candidate);
+  const date = Number.isFinite(timestamp) ? new Date(timestamp) : AppTime.date(candidate);
   return Number.isNaN(date.getTime()) ? null : localDateKey(date);
 }
 
@@ -505,7 +506,7 @@ function grokBuildTimestamp(value) {
   const numeric = Number(value);
   let timestamp = Number.isFinite(numeric)
     ? (Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric)
-    : new Date(value).getTime();
+    : AppTime.date(value).getTime();
   if (!Number.isFinite(timestamp)) return null;
   timestamp = Math.trunc(timestamp);
   return Number.isNaN(new Date(timestamp).getTime()) ? null : timestamp;
@@ -1618,7 +1619,7 @@ function cursorEventDate(value) {
     const milliseconds = numeric >= 1e15 ? numeric / 1000 : numeric >= 1e12 ? numeric : numeric * 1000;
     date = new Date(milliseconds);
   } else {
-    date = new Date(value);
+    date = AppTime.date(value);
   }
   return Number.isNaN(date.getTime()) ? null : localDateKey(date);
 }
@@ -1741,6 +1742,7 @@ async function fetchCursorUsageEvents(credentials) {
     source: "cursor",
     generatedAt: new Date().toISOString(),
     provider: "cursor-usage-events",
+    timezone: AppTime.ZONE,
     rangeDays: daysToFetch,
     daily,
     totals,
@@ -2083,7 +2085,7 @@ export function aggregateKimiUsageRecords(records, generatedAt = new Date().toIS
     const numericTime = Number(record.time);
     const timestamp = Number.isFinite(numericTime)
       ? new Date(numericTime >= 1e12 ? numericTime : numericTime * 1000)
-      : new Date(record.time);
+      : AppTime.date(record.time);
     if (Number.isNaN(timestamp.getTime())) continue;
     const usage = record.usage || {};
     const inputTokens = numberOrZero(usage.inputOther ?? usage.input_tokens);
@@ -2144,7 +2146,7 @@ export function aggregateKimiUsageRecords(records, generatedAt = new Date().toIS
     sum.totalTokens += day.totalTokens;
     return sum;
   }, { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0 });
-  return { source: "kimi", generatedAt, provider: "kimi-code-wire", daily, totals };
+  return { source: "kimi", generatedAt, timezone: AppTime.ZONE, provider: "kimi-code-wire", daily, totals };
 }
 
 export function mergeKimiUsageSourceRecords(sources, generatedAt = new Date().toISOString()) {
@@ -2324,7 +2326,7 @@ export function mergeObservationHistory(
   } = {},
 ) {
   const cutoff = new Date(now);
-  cutoff.setDate(cutoff.getDate() - retentionDays);
+  cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays);
   const cutoffMs = cutoff.getTime();
   const byKey = new Map();
   for (const observation of [...(observations || []), ...(additions || [])]) {
@@ -2567,7 +2569,7 @@ export function mergeQuotaSnapshotHistory(
   } = {},
 ) {
   const cutoff = new Date(now);
-  cutoff.setDate(cutoff.getDate() - retentionDays);
+  cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays);
   const cutoffKey = localDateKey(cutoff);
   const byDate = new Map();
   for (const snapshot of [...(snapshots || []), ...(current ? [current] : [])]) {

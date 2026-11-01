@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import codexAutoReview from "../lib/codex-auto-review.js";
+import AppTime from "../web/app-time.js";
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
@@ -55,10 +56,9 @@ function recomputeTotals(daily, snapshots, current) {
 function normalizeUsageDate(value) {
   const text = String(value || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
-  const date = new Date(text);
+  const date = AppTime.date(text);
   if (Number.isNaN(date.getTime())) return null;
-  const pad = (part) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return AppTime.dateKey(date);
 }
 
 export function mergeUsageSnapshotHistory(snapshots, current) {

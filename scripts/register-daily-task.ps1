@@ -1,7 +1,7 @@
 param(
   [string]$TaskName = "AITokenLedgerDailyExport",
   [string]$At = "12:00",
-  [string]$Timezone,
+  [string]$Timezone = "Asia/Shanghai",
   [switch]$Force
 )
 
@@ -21,19 +21,24 @@ if ($existing -and -not $Force) {
   exit 0
 }
 
-if ($existing -and $Force) {
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-}
-
+$Timezone = "Asia/Shanghai"
 $argument = "-NoProfile -ExecutionPolicy Bypass -File `"$ExportScript`""
 if ($Timezone) { $argument += " -Timezone `"$Timezone`"" }
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argument -WorkingDirectory $ProjectRoot
-$trigger = New-ScheduledTaskTrigger -Daily -At $At
+$today = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString("yyyy-MM-dd")
+$clock = [DateTime]::ParseExact($At, "HH:mm", [Globalization.CultureInfo]::InvariantCulture)
+$boundary = "${today}T$($clock.ToString('HH:mm:ss'))+08:00"
+$trigger = New-ScheduledTaskTrigger -Daily -At ([DateTimeOffset]::Parse($boundary).DateTime)
+$trigger.StartBoundary = $boundary
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Export every registered local agent usage source into the project data folder." | Out-Null
+if ($existing) {
+  Set-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger | Out-Null
+} else {
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Export every registered local agent usage source into the project data folder (Asia/Shanghai)." | Out-Null
+}
 
 Write-Host "Registered daily task: $TaskName"
-Write-Host "Runs every day at: $At"
+Write-Host "Runs every day at: $At (UTC+08:00)"
 Write-Host "Timezone: $(if ($Timezone) { $Timezone } else { 'system local timezone' })"
 Write-Host "Output folder: $(Join-Path $ProjectRoot 'usage-logs')"
