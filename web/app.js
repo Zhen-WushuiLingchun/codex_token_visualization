@@ -45,6 +45,16 @@ const els = {
   forecastAdvice: document.querySelector("#forecastAdvice"),
   forecastSourcePill: document.querySelector("#forecastSourcePill"),
   forecastRateList: document.querySelector("#forecastRateList"),
+  quotaValue: document.querySelector("#quotaValue"),
+  quotaValueSummary: document.querySelector("#quotaValueSummary"),
+  quotaValueTable: document.querySelector("#quotaValueTable"),
+  quotaValueRows: document.querySelector("#quotaValueRows"),
+  quotaChart: document.querySelector("#quotaChart"),
+  quotaChartPlot: document.querySelector("#quotaChartPlot"),
+  quotaChartLegend: document.querySelector("#quotaChartLegend"),
+  quotaChartMode: document.querySelector("#quotaChartMode"),
+  quotaChartEras: document.querySelector("#quotaChartEras"),
+  quotaChartDetail: document.querySelector("#quotaChartDetail"),
   viewTabs: document.querySelector(".view-tabs"),
   displaySettingsBtn: document.querySelector("#displaySettingsBtn"),
   displaySettingsDialog: document.querySelector("#displaySettingsDialog"),
@@ -1166,8 +1176,184 @@ function renderForecastRates(forecast) {
   });
 }
 
+let quotaChartData = null;
+let quotaChartUnit = "weekly";
+let quotaChartWidth = 0;
+
+function drawQuotaValueChart() {
+  const width = Math.floor(els.quotaChartPlot.clientWidth);
+  if (!quotaChartData || !width) return;
+  quotaChartWidth = width;
+  const { start, end, groups, eras } = quotaChartData;
+  const monthly = quotaChartUnit === "monthly";
+  const amount = (row) => monthly ? row.monthlyUsd : row.weeklyUsd;
+  const amountLabel = monthly ? "30 天等价" : "整周等价";
+  const height = 240;
+  const left = 68;
+  const right = width - 23;
+  const top = 12;
+  const bottom = height - 35;
+  const stepBase = Math.max(...groups.flat().map(amount)) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(stepBase));
+  const step = Math.ceil(stepBase / magnitude) * magnitude;
+  const x = (at) => left + ((at - start) / (end - start)) * (right - left);
+  const y = (value) => bottom - (value / (step * 4)) * (bottom - top);
+  const svgNode = (tag, attributes, label) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    if (label !== undefined) node.textContent = label;
+    return node;
+  };
+  const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": `Codex ${amountLabel}趋势，美元` });
+  const active = (row) => {
+    svg.querySelector(".is-selected")?.classList.remove("is-selected");
+    dots.get(row)?.classList.add("is-selected");
+    const rate = row.paired ? "同期快照" : "按日回算";
+    els.quotaChartDetail.textContent = `${AppTime.dateKey(row.lastAt)} · ${formatCost(amount(row))} · ${rate}${row.fallback ? "（含回退价格）" : ""} · 覆盖 ${row.percent.toFixed(1)} 个百分点`;
+  };
+  eras.forEach((era, index) => {
+    svg.append(svgNode("rect", { x: x(era.start), y: top, width: x(era.end) - x(era.start),
+      height: bottom - top, class: `quota-chart-band tone-${index % 3}` }));
+    if (index > 0) {
+      svg.append(svgNode("line", { x1: x(era.start), x2: x(era.start), y1: top, y2: bottom, class: "quota-chart-divider" }));
+    }
+  });
+  for (let tick = 0; tick <= 4; tick++) {
+    const value = tick * step;
+    svg.append(svgNode("line", { x1: left, x2: right, y1: y(value), y2: y(value), class: "chart-grid" }),
+      svgNode("text", { x: left - 8, y: y(value) + 4, "text-anchor": "end", class: "quota-chart-axis" },
+        tick ? `$${formatNumber(Number(value.toPrecision(5)))}` : "$0"));
+  }
+  const tickCount = width < 490 ? 2 : width < 750 ? 3 : 5;
+  for (let tick = 0; tick <= tickCount; tick++) {
+    const at = start + (end - start) * tick / tickCount;
+    svg.append(svgNode("text", { x: x(at), y: bottom + 22, "text-anchor": "middle", class: "quota-chart-axis" },
+      AppTime.dateKey(at).slice(5)));
+  }
+  const dots = new Map();
+  for (const group of groups) {
+    const method = group[0].paired ? "paired" : "historical";
+    if (group.length > 1) {
+      svg.append(svgNode("polyline", { points: group.map((row) => `${x(row.lastAt)},${y(amount(row))}`).join(" "),
+        class: `quota-chart-line ${method}`, fill: "none" }));
+    }
+    for (const row of group) {
+      const dot = svgNode("circle", { cx: x(row.lastAt), cy: y(amount(row)), r: 4.5, tabindex: 0, role: "img",
+        class: `quota-chart-dot ${method}${row.fallback ? " price-fallback" : ""}`,
+        "aria-label": `${AppTime.dateKey(row.lastAt)} ${amountLabel} ${formatCost(amount(row))}` });
+      dot.append(svgNode("title", {}, `${AppTime.dateKey(row.lastAt)} · ${formatCost(amount(row))}`));
+      dot.addEventListener("pointerenter", () => active(row));
+      dot.addEventListener("click", () => active(row));
+      dot.addEventListener("focus", () => active(row));
+      dots.set(row, dot);
+    }
+  }
+  svg.append(...dots.values());
+  els.quotaChartPlot.replaceChildren(svg);
+  active(groups.at(-1).at(-1));
+}
+
+function renderQuotaValueChart(rows, plan, observationStart) {
+  quotaChartData = globalThis.QuotaValue.trendSeries(rows, plan, observationStart);
+  els.quotaChart.classList.toggle("is-hidden", !quotaChartData);
+  if (!quotaChartData) return;
+  const { groups, eras } = quotaChartData;
+  const samples = groups.flat();
+  const legend = (pattern, text) => {
+    const label = document.createElement("span");
+    label.className = pattern;
+    label.textContent = text;
+    return label;
+  };
+  els.quotaChartLegend.replaceChildren(
+    ...(samples.some((row) => row.paired) ? [legend("paired", "同期快照")] : []),
+    ...(samples.some((row) => !row.paired) ? [legend("historical", "按日回算")] : []),
+    ...(samples.some((row) => row.fallback) ? [legend("price-fallback", "含回退价格")] : []),
+  );
+  els.quotaChartEras.replaceChildren(...eras.map((era, index) => {
+    const label = index === 0 ? `起始区间 ${era.multiplier}×`
+      : `${AppTime.input(era.start).slice(0, 16).replace("T", " ")} 起 ${era.multiplier}×`;
+    const hasEstimate = samples.some((row) => row.lastAt >= era.start &&
+      (index === eras.length - 1 || row.lastAt < era.end));
+    return legend(`tone-${index % 3}`, hasEstimate ? label : `${label} · 无可用估值`);
+  }));
+  drawQuotaValueChart();
+}
+
+const quotaChartResize = new ResizeObserver(() => {
+  if (els.quotaChartPlot.clientWidth !== quotaChartWidth) drawQuotaValueChart();
+});
+quotaChartResize.observe(els.quotaChartPlot);
+els.quotaChartMode.addEventListener("click", (event) => {
+  const selected = event.target.closest("[data-quota-value-unit]");
+  if (!selected) return;
+  quotaChartUnit = selected.dataset.quotaValueUnit;
+  for (const button of els.quotaChartMode.querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button === selected));
+  }
+  drawQuotaValueChart();
+});
+
+function renderQuotaValue(forecast) {
+  els.quotaValue.classList.toggle("is-hidden", forecast.agent !== "codex");
+  if (forecast.agent !== "codex") return;
+  const { current, spend, rows, observationStart } = globalThis.QuotaValue.analyze({
+    daily: localUsageDays(forecast.snapshot),
+    observations: forecast.quotaData?.observations,
+    capacityPlan: forecast.plan.capacityPlan,
+    basis: forecast.snapshot.autoReview?.quotaBasis,
+  });
+  const { MIN_INTERVALS, MIN_COVERAGE } = globalThis.QuotaValue;
+  renderQuotaValueChart(rows, forecast.plan.capacityPlan, observationStart);
+  const money = (usd) => usd == null ? "--" : formatCost(usd);
+  const coverage = (row) => `${row.percent.toFixed(1)} 百分点 · ${row.intervalCount} 个区间`;
+  const method = (row) => `${row.paired ? "同期快照" : "按日回算"}${row.fallback ? " · 含回退价格" : ""}`;
+  const ready = current?.weeklyUsd != null;
+  const stats = [
+    ["本周整周估计", money(current?.weeklyUsd), ready
+      ? `${coverage(current)} · ${method(current)} · 截至 ${formatAccountTime(current.lastAt)}`
+      : `${current ? `已覆盖 ${coverage(current)}；` : ""}至少 ${MIN_INTERVALS} 个区间、覆盖 ${MIN_COVERAGE} 百分点`],
+    ["按本周折算 30 天", money(current?.monthlyUsd), "假设维持同样的周额度与用量结构"],
+    [`${spend.month} 账本已用`, money(spend.usd), spend.pricedDays || spend.unpricedDays
+      ? `${spend.pricedDays} 个有估价的记录日${spend.unpricedDays ? ` · ${spend.unpricedDays} 日缺价` : ""}${spend.fallback ? " · 含回退价格" : ""}`
+      : "本月暂无记录"],
+  ];
+  els.quotaValueSummary.replaceChildren(...stats.map(([label, value, detail]) => {
+    const item = document.createElement("div");
+    const term = document.createElement("dt");
+    const amount = document.createElement("dd");
+    const note = document.createElement("dd");
+    term.textContent = label;
+    amount.textContent = value;
+    note.textContent = detail;
+    item.append(term, amount, note);
+    return item;
+  }));
+  els.quotaValueRows.replaceChildren(...rows.map((row) => {
+    const tr = document.createElement("tr");
+    const change = row.change === null ? "--" : `${row.change >= 0 ? "+" : ""}${row.change.toFixed(1)}%`;
+    for (const [index, value] of [
+      `${formatAccountTime(row.reset)}${row === current ? " · 当前" : ""}`,
+      row.intervalCount ? money(row.usd) : "--", coverage(row), money(row.weeklyUsd), money(row.monthlyUsd), change,
+      `${method(row)}${row.leadingModel ? ` · ${row.leadingModel}` : ""}`,
+    ].entries()) {
+      const td = document.createElement("td");
+      td.textContent = value;
+      if (index === 0 && row.intervalCount) {
+        const dates = document.createElement("small");
+        dates.textContent = `${AppTime.dateKey(row.firstAt)} 至 ${AppTime.dateKey(row.lastAt)}`;
+        td.appendChild(dates);
+      }
+      tr.appendChild(td);
+    }
+    return tr;
+  }));
+  els.quotaValueTable.classList.toggle("is-hidden", rows.length === 0);
+}
+
 function renderForecast(agent = forecastAgent) {
   const forecast = buildForecast(agent);
+  renderQuotaValue(forecast);
   renderQuotaWindowTabs(forecast);
   els.forecastMetricGrid.replaceChildren();
   if (forecast.account) {

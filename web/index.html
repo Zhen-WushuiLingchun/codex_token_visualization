@@ -100,6 +100,44 @@
             </div>
             <div class="forecast-rate-list" id="forecastRateList"></div>
           </section>
+
+          <section class="panel quota-value-panel is-hidden" id="quotaValue" aria-labelledby="quotaValueHeading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-label">API equivalent</p>
+                <h2 id="quotaValueHeading">Codex 额度价值趋势</h2>
+              </div>
+              <div class="pill">北京时间 · USD</div>
+            </div>
+            <dl class="quota-value-summary" id="quotaValueSummary"></dl>
+            <div class="quota-chart is-hidden" id="quotaChart">
+              <div class="quota-chart-header">
+                <div class="quota-chart-legend" id="quotaChartLegend"></div>
+                <div class="trend-modes" id="quotaChartMode" role="group" aria-label="金额口径">
+                  <button type="button" data-quota-value-unit="weekly" aria-pressed="true">整周</button>
+                  <button type="button" data-quota-value-unit="monthly" aria-pressed="false">30 天</button>
+                </div>
+              </div>
+              <div id="quotaChartPlot"></div>
+              <div class="quota-chart-eras" id="quotaChartEras" aria-label="套餐容量区间"></div>
+              <div class="quota-chart-detail" id="quotaChartDetail" aria-live="polite"></div>
+            </div>
+            <div class="table-scroll is-hidden" id="quotaValueTable" tabindex="0" aria-label="Codex 周额度历史">
+              <table>
+                <thead><tr>
+                  <th scope="col">周窗口重置</th>
+                  <th scope="col">样本 API 估价</th>
+                  <th scope="col">额度覆盖</th>
+                  <th scope="col">整周等价</th>
+                  <th scope="col">30 天等价</th>
+                  <th scope="col">较上周</th>
+                  <th scope="col">样本口径</th>
+                </tr></thead>
+                <tbody id="quotaValueRows"></tbody>
+              </table>
+            </div>
+            <p class="quota-value-note">API 估价不是账单或官方额度。只对可比的已结束周窗口显示「较上周」；差异仍可能来自模型、缓存或本地采样变化。</p>
+          </section>
         </section>
 
         <section class="reset-planner-view is-hidden" id="resetPlannerView" aria-live="polite">
@@ -289,6 +327,7 @@
     <script src="/app-time.js"></script>
     <script src="/plan-capacity.js"></script>
     <script src="/forecast-model.js"></script>
+    <script src="/quota-value.js"></script>
     <script src="/forecast-demand.js"></script>
     <script src="/reset-optimizer.js"></script>
     <script src="/reset-planner.js"></script>

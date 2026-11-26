@@ -14,6 +14,7 @@ import codexAutoReview from "../lib/codex-auto-review.js";
 import forecastModel from "../web/forecast-model.js";
 import AppTime from "../web/app-time.js";
 import planCapacity from "../web/plan-capacity.js";
+import quotaValue from "../web/quota-value.js";
 network.useSystemCertificates();
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -2278,14 +2279,18 @@ export function aggregateUsage(snapshot) {
 }
 
 function currentUsageAggregate(source, inMemoryUsage) {
-  if (inMemoryUsage) return { ...aggregateUsage(inMemoryUsage), usageFetchedAt: new Date().toISOString() };
+  const withCapture = (snapshot, fetchedAt) => ({
+    ...aggregateUsage(snapshot), usageFetchedAt: fetchedAt,
+    ...(source === "codex" ? { apiCostDays: quotaValue.captureCostDays(snapshot.daily, fetchedAt) } : {}),
+  });
+  if (inMemoryUsage) return withCapture(inMemoryUsage, new Date().toISOString());
   const filePath = usageSnapshotPath(source);
   if (!filePath || !existsSync(filePath)) return null;
   try {
     const stat = statSync(filePath);
     const original = readJson(filePath);
     const snapshot = source === "codex" ? codexAutoReview.enrichCodexUsage(original, { cutoff: stat.mtimeMs }) : original;
-    return { ...aggregateUsage(snapshot), usageFetchedAt: stat.mtime.toISOString() };
+    return withCapture(snapshot, stat.mtime.toISOString());
   } catch (_) {
     return null;
   }
@@ -2492,7 +2497,11 @@ function writeQuotaObservation(snapshot, usageAggregate, capacityPlan = null) {
     }, capacityPlan);
     const newSegment = segmentDecision.newSegment;
     const segment = newSegment ? Number(prior?.segment || 0) + 1 : Number(prior.segment || 1);
-    if (!newSegment && !shouldRecordQuotaObservation(prior, { usedPercent, totalTokens }, fetchedAt)) continue;
+    const modelScoped = Boolean(window.modelPatterns?.length);
+    const apiCostDays = source === "codex" && !modelScoped && Number(window.windowDurationMins) === quotaValue.WEEK_MINUTES
+      ? usageAggregate?.apiCostDays : null;
+    const addsCostEvidence = apiCostDays && !prior?.apiCostDays;
+    if (!newSegment && !addsCostEvidence && !shouldRecordQuotaObservation(prior, { usedPercent, totalTokens }, fetchedAt)) continue;
 
     additions.push({
       fetchedAt,
@@ -2508,6 +2517,8 @@ function writeQuotaObservation(snapshot, usageAggregate, capacityPlan = null) {
       usageBasis: usageAggregate?.usageBasis || "local-token-v1",
       usageFetchedAt: usageAggregate?.usageFetchedAt || null,
       models: windowUsage.models,
+      ...(source === "codex" && modelScoped ? { modelScoped: true } : {}),
+      ...(apiCostDays ? { apiCostDays } : {}),
       resetDetected: segmentDecision.resetDetected,
       resetReason: segmentDecision.reason,
     });

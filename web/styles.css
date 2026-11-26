@@ -1502,6 +1502,147 @@ button.heatmap-cell:hover, button.heatmap-cell:focus-visible { outline: 2px soli
   font-size: 12px;
 }
 
+.quota-value-panel {
+  min-width: 0;
+}
+
+.quota-value-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 12px 20px;
+  margin: 0 0 16px;
+}
+
+.quota-value-summary > div {
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.quota-value-summary dt,
+.quota-value-summary dd:last-child,
+.quota-value-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.quota-value-summary dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  font-size: 24px;
+}
+
+.quota-value-panel table {
+  min-width: 760px;
+}
+
+.quota-chart {
+  margin-bottom: 16px;
+  padding-top: 2px;
+}
+
+.quota-chart-header,
+.quota-chart-legend,
+.quota-chart-eras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.quota-chart-header {
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.quota-chart-legend span::before {
+  display: inline-block;
+  width: 14px;
+  margin-right: 6px;
+  vertical-align: 3px;
+  border-top: 2px solid var(--teal);
+  content: "";
+}
+
+.quota-chart-legend .historical::before {
+  border-top-style: dashed;
+  border-color: var(--clay-dark);
+}
+
+.quota-chart-legend .price-fallback::before {
+  width: 7px;
+  height: 7px;
+  vertical-align: 0;
+  border: 1.5px solid var(--clay-dark);
+  border-radius: 50%;
+}
+
+.quota-chart svg {
+  display: block;
+  width: 100%;
+  height: 240px;
+}
+
+.quota-chart-axis {
+  fill: var(--ink-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-chart .tone-0 { --era-color: #819a8b; }
+.quota-chart .tone-1 { --era-color: #bb8467; }
+.quota-chart .tone-2 { --era-color: #638fa1; }
+.quota-chart-band { fill: var(--era-color); fill-opacity: 0.14; }
+.quota-chart-divider { stroke: var(--line-strong); stroke-dasharray: 3 3; stroke-width: 1.5; }
+
+.quota-chart-line,
+.quota-chart-dot {
+  stroke: var(--teal);
+  stroke-width: 2;
+}
+
+.quota-chart-line.historical {
+  stroke: var(--clay-dark);
+  stroke-dasharray: 5 4;
+}
+
+.quota-chart-dot { fill: var(--teal); cursor: pointer; }
+.quota-chart-dot.historical { stroke: var(--clay-dark); fill: var(--clay-dark); }
+.quota-chart-dot.price-fallback { fill: var(--panel); }
+.quota-chart-dot.is-selected,
+.quota-chart-dot:focus-visible { stroke-width: 3; r: 6px; }
+
+.quota-chart-eras span::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  background: var(--era-color);
+  content: "";
+}
+
+.quota-chart-detail {
+  min-height: 38px;
+  margin-top: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.quota-value-panel td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.quota-value-note {
+  margin: 10px 0 0;
+}
+
 .table-panel {
   padding-bottom: 8px;
 }
